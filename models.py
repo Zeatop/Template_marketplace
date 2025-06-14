@@ -212,7 +212,6 @@ class Contract(Model):
         else:
             self.rest_amount = self.rest_amount - Decimal(str(amount))
         self.save()
-      
 
 class Event(Model):
     contract = ForeignKeyField(Contract, backref='events')
