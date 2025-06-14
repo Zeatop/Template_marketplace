@@ -7,27 +7,30 @@ class Permissions(Enum):
     MANAGEMENT_TEAM = auto()
     LOGISTIC_TEAM = auto()
     COMMERCIAL_TEAM = auto()
+    CLIENT = auto()
 
 class UserRole(Enum):
     """Définit les rôles utilisateur disponibles."""
     SUPPORT = "support"
     COMMERCIAL = "commercial"
     MANAGEMENT = "Management"
+    CLIENT = "client"
 
-class Security:
-    """Gère les fonctionnalités de sécurité liées aux mots de passe."""
+class Address(models.Model):
+    """Modèle représentant une adresse associée à un utilisateur."""
     
-    @staticmethod
-    def hash_password(password):
-        """Crée une version hashée du mot de passe fourni."""
-        salt = bcrypt.gensalt()
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
-        return hashed_password.decode('utf-8')
-
-    @staticmethod
-    def verify_password(password, hashed_password):
-        """Vérifie si le mot de passe correspond au hash."""
-        return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+    street = models.CharField(max_length=255, verbose_name="Rue")
+    city = models.CharField(max_length=100, verbose_name="Ville")
+    postal_code = models.CharField(max_length=20, verbose_name="Code Postal")
+    country = models.CharField(max_length=100, verbose_name="Pays")
+    
+    class Meta:
+        db_table = 'address'
+        verbose_name = 'Adresse'
+        verbose_name_plural = 'Adresses'
+    
+    def __str__(self):
+        return f"{self.street}, {self.city}, {self.postal_code}, {self.country}"
 
 class User(models.Model):
     """Modèle représentant un utilisateur du CRM."""
@@ -36,6 +39,7 @@ class User(models.Model):
         (UserRole.SUPPORT.value, 'Support'),
         (UserRole.COMMERCIAL.value, 'Commercial'),
         (UserRole.MANAGEMENT.value, 'Management'),
+        (UserRole.CLIENT.value, 'Client'),
     ]
     
     name = models.CharField(max_length=255, verbose_name="Nom")
@@ -66,6 +70,7 @@ class User(models.Model):
             UserRole.SUPPORT.value: Permissions.LOGISTIC_TEAM,
             UserRole.COMMERCIAL.value: Permissions.COMMERCIAL_TEAM,
             UserRole.MANAGEMENT.value: Permissions.MANAGEMENT_TEAM,
+            UserRole.CLIENT.value: Permissions.LOGISTIC_TEAM,
         }
         return role_permissions.get(self.role)
         
