@@ -1,5 +1,6 @@
 from django.db import models
 from enum import Enum, auto
+from marketplace.security.models import Security
 import bcrypt
 
 class Permissions(Enum):
