@@ -4,241 +4,159 @@ import datetime
 from decimal import Decimal
 from users.models import User
 
-class Client(models.Model):
-    """Modèle représentant un client."""
+class Product(models.Model):
+    """Modèle représentant un produit."""
     
     name = models.CharField(max_length=255, verbose_name="Nom")
-    mail = models.EmailField(verbose_name="Email")
-    phone = models.CharField(max_length=20, verbose_name="Téléphone")
+    description = models.TextField(verbose_name="Description")
+    price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Prix")
+    promotion_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Prix promotionnel", null=True, blank=True)
+    image = models.ImageField(upload_to='products/', verbose_name="Image", null=True, blank=True)
+    stock = models.PositiveIntegerField(default=0, verbose_name="Stock")
+    editor = models.CharField(max_length=255, verbose_name="Éditeur", null=True, blank=True)
+    category = models.CharField(max_length=100, verbose_name="Catégorie", null=True, blank=True)
+    release_date = models.DateField(verbose_name="Date de sortie", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
 
     class Meta:
-        db_table = 'client'
-        verbose_name = 'Client'
-        verbose_name_plural = 'Clients'
+        db_table = 'product'
+        verbose_name = 'Produit'
+        verbose_name_plural = 'Produits'
         ordering = ['name']
     
     def __str__(self):
         return self.name
     
     @classmethod
-    def create_client(cls, client_infos: dict):
-        """Crée un nouveau client avec les informations fournies."""
-        client = cls.objects.create(
-            name=client_infos["name"], 
-            mail=client_infos["mail"], 
-            phone=client_infos["phone"]
+    def create_product(cls, product_infos: dict):
+        """Crée un nouveau produit avec les informations fournies."""
+        product = cls.objects.create(
+            name=product_infos["name"], 
+            description=product_infos["description"], 
+            price=Decimal(product_infos["price"])
         )
-        return client
+        return product
     
-    def update_phone(self, phone):
-        """Met à jour le numéro de téléphone du client."""
-        self.phone = phone
+    def update_stock(self, stock):
+        """Met à jour le stock du produit."""
+        self.stock = stock
         self.save()
     
-    def update_mail(self, mail):
-        """Met à jour l'email du client."""
-        self.mail = mail
+    def update_price(self, price):
+        """Met à jour le prix du produit."""
+        self.price = Decimal(price)
+        self.save()
+    
+    def update_promotion_price(self, promotion_price):
+        """Met à jour le prix promotionnel du produit."""
+        if promotion_price:
+            self.promotion_price = Decimal(promotion_price)
+        else:
+            self.promotion_price = None
         self.save()
 
-class Contract(models.Model):
-    """Modèle représentant un contrat."""
+    def update_image(self, image):
+        """Met à jour l'image du produit."""
+        if image:
+            self.image = image
+        else:
+            self.image = None
+        self.save()
     
-    STATE_CHOICES = [
-        ('draft', 'Brouillon'),
-        ('signed', 'Signé'),
-        ('cancelled', 'Annulé'),
-        ('completed', 'Terminé'),
-    ]
+    def update_editor(self, editor):
+        """Met à jour l'éditeur du produit."""
+        self.editor = editor
+        self.save()
     
-    client = models.ForeignKey(
-        Client, 
-        on_delete=models.CASCADE, 
-        related_name='contracts',
-        verbose_name="Client"
-    )
-    commercial = models.ForeignKey(
-        User, 
-        on_delete=models.CASCADE, 
-        related_name='contracts',
-        verbose_name="Commercial"
-    )
-    total_amount = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2,
-        verbose_name="Montant total"
-    )
-    rest_amount = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2,
-        verbose_name="Montant restant"
-    )
-    state = models.CharField(
-        max_length=20, 
-        choices=STATE_CHOICES, 
-        default='draft',
-        verbose_name="État"
-    )
-    date_created = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
-    updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
+    def update_category(self, category):
+        """Met à jour la catégorie du produit."""
+        self.category = category
+        self.save()
+    
+    def is_available(self):
+        """Vérifie si le produit est disponible en stock."""
+        return self.stock > 0
+    
+    def is_on_promotion(self):
+        """Vérifie si le produit est en promotion."""
+        return self.promotion_price is not None and self.promotion_price < self.price
+    
+    def update_release_date(self, release_date):
+        """Met à jour la date de sortie du produit."""
+        if release_date:
+            self.release_date = release_date
+        else:
+            self.release_date = None
+        self.save()
 
+class CartItem(models.Model):
+    """Modèle représentant un article dans le panier."""
+    
+    cart = models.ForeignKey('Cart', on_delete=models.CASCADE, related_name='items', verbose_name="Panier")
+    product = models.ForeignKey(product, on_delete=models.CASCADE, related_name='cart_items', verbose_name="Produit")
+    quantity = models.PositiveIntegerField(default=1, verbose_name="Quantité")
+    
     class Meta:
-        db_table = 'contract'
-        verbose_name = 'Contrat'
-        verbose_name_plural = 'Contrats'
-        ordering = ['-date_created']
+        db_table = 'cart_item'
+        verbose_name = 'Article de panier'
+        verbose_name_plural = 'Articles de panier'
+        unique_together = ('cart', 'product')
     
     def __str__(self):
-        return f'Contrat n°{self.id} - {self.client.name}'
+        return f"{self.quantity} x {self.product.name} dans le panier {self.cart.id}"
+    
+    def get_total_price(self):
+        """Calcule le prix total de l'article dans le panier."""
+        if self.product.is_on_promotion():
+            return self.quantity * self.product.promotion_price
+        return self.quantity * self.product.price
 
-    @classmethod
-    def create_contract(cls, contract_dict: dict):
-        """Crée un nouveau contrat avec les informations fournies."""
-        try:
-            contract = cls.objects.create(
-                client=contract_dict["client"], 
-                commercial=contract_dict["commercial"], 
-                total_amount=contract_dict["total_amount"],
-                rest_amount=contract_dict["rest_amount"], 
-                state=contract_dict.get("state", "draft")
-            )
-            return contract
-        except Exception as e:
-            print(Colors.error(f"Une erreur est survenue lors de la création du contrat : {e}"))
-            return None
+class Cart(models.Model):
+    """Modèle représentant un panier d'achat."""
     
-    def update_contract_state(self, state):
-        """Met à jour l'état du contrat."""
-        if state in [choice[0] for choice in self.STATE_CHOICES]:
-            self.state = state
-            self.save()
-        else:
-            raise ValueError(f"État invalide: {state}")
-    
-    def update_rest_amount(self, amount):
-        """Met à jour le montant restant du contrat."""
-        try:
-            if isinstance(self.rest_amount, float):
-                self.rest_amount = float(self.rest_amount) - float(amount)
-            else:
-                self.rest_amount = self.rest_amount - Decimal(str(amount))
-            
-            # S'assurer que le montant restant ne devient pas négatif
-            if self.rest_amount < 0:
-                self.rest_amount = Decimal('0.00')
-            
-            self.save()
-        except Exception as e:
-            print(Colors.error(f"Erreur lors de la mise à jour du montant restant : {e}"))
-    
-    @property
-    def is_paid(self):
-        """Vérifie si le contrat est entièrement payé."""
-        return self.rest_amount == 0
-    
-    @property
-    def paid_amount(self):
-        """Calcule le montant déjà payé."""
-        return self.total_amount - self.rest_amount
-
-class Event(models.Model):
-    """Modèle représentant un événement."""
-    
-    contract = models.ForeignKey(
-        Contract, 
-        on_delete=models.CASCADE, 
-        related_name='events',
-        verbose_name="Contrat"
-    )
-    client = models.ForeignKey(
-        Client, 
-        on_delete=models.CASCADE, 
-        related_name='events',
-        verbose_name="Client"
-    )
-    name = models.CharField(max_length=255, unique=True, verbose_name="Nom")
-    event_start = models.DateTimeField(verbose_name="Début de l'événement")
-    event_end = models.DateTimeField(verbose_name="Fin de l'événement")
-    logistic_contact = models.ForeignKey(
-        User, 
-        on_delete=models.SET_NULL, 
-        related_name='events', 
-        null=True, 
-        blank=True,
-        verbose_name="Contact logistique"
-    )
-    location = models.CharField(max_length=255, verbose_name="Lieu")
-    attendees = models.PositiveIntegerField(verbose_name="Nombre de participants")
-    notes = models.TextField(null=True, blank=True, verbose_name="Notes")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='carts', verbose_name="Utilisateur")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
 
     class Meta:
-        db_table = 'event'
-        verbose_name = 'Événement'
-        verbose_name_plural = 'Événements'
-        ordering = ['event_start']
+        db_table = 'cart'
+        verbose_name = 'Panier'
+        verbose_name_plural = 'Paniers'
+        ordering = ['created_at']
     
     def __str__(self):
-        return self.name
+        return f"Panier de {self.user.name} créé le {self.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
     
     @classmethod
-    def create_event(cls, contract_infos: dict):
-        """Crée un nouvel événement avec les informations fournies."""
+    def create_cart(cls, user: User):
+        """Crée un nouveau panier pour l'utilisateur."""
+        cart = cls.objects.create(user=user)
+        return cart
+    
+    def add_product(self, product: product, quantity: int):
+        """Ajoute un produit au panier avec la quantité spécifiée."""
+        if quantity <= 0:
+            print(Colors.error("La quantité doit être supérieure à zéro."))
+            return
+        
+        cart_item, created = CartItem.objects.get_or_create(cart=self, product=product)
+        cart_item.quantity += quantity
+        cart_item.save()
+        
+        print(Colors.success(f"{quantity} {product.name}(s) ajouté(s) au panier."))
+    
+    def remove_product(self, product: product):
+        """Supprime un produit du panier."""
         try:
-            event_data = {
-                'contract': contract_infos["contract"],
-                'client': contract_infos["client"],
-                'event_start': contract_infos["event_start"],
-                'event_end': contract_infos["event_end"],
-                'name': contract_infos["name"],
-                'location': contract_infos["location"],
-                'attendees': contract_infos["attendees"],
-                'notes': contract_infos.get("notes", "")
-            }
-            
-            if "logistic_contact" in contract_infos and contract_infos["logistic_contact"]:
-                event_data['logistic_contact'] = contract_infos["logistic_contact"]
-            
-            event = cls.objects.create(**event_data)
-            return event
-        except Exception as e:
-            print(Colors.error(f"Une erreur est survenue lors de la création de l'évènement : {e}\nVeuillez réessayer."))
-            return None
+            cart_item = CartItem.objects.get(cart=self, product=product)
+            cart_item.delete()
+            print(Colors.success(f"{product.name} supprimé du panier."))
+        except CartItem.DoesNotExist:
+            print(Colors.error(f"{product.name} n'est pas dans le panier."))
     
-    def add_support(self, logistic_contact):
-        """Ajoute un contact logistique à l'événement."""
-        try:
-            self.logistic_contact = logistic_contact
-            self.save()
-            return True
-        except Exception as e:
-            print(Colors.error(f"Erreur lors de l'ajout du support à l'évènement: {e}"))
-            return None
+    def clear_cart(self):
+        """Vide le panier de tous les produits."""
+        CartItem.objects.filter(cart=self).delete()
+        print(Colors.success("Le panier a été vidé."))
     
-    def remove_support(self):
-        """Supprime le contact logistique de l'événement."""
-        self.logistic_contact = None
-        self.save()
-    
-    @property
-    def duration(self):
-        """Calcule la durée de l'événement."""
-        return self.event_end - self.event_start
-    
-    @property
-    def is_past(self):
-        """Vérifie si l'événement est passé."""
-        return self.event_end < datetime.datetime.now()
-    
-    @property
-    def is_ongoing(self):
-        """Vérifie si l'événement est en cours."""
-        now = datetime.datetime.now()
-        return self.event_start <= now <= self.event_end
-    
-    @property
-    def is_upcoming(self):
-        """Vérifie si l'événement est à venir."""
-        return self.event_start > datetime.datetime.now()

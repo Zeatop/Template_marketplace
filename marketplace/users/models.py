@@ -1,6 +1,7 @@
 from django.db import models
 from enum import Enum, auto
 from marketplace.security.models import Security
+
 import bcrypt
 
 class Permissions(Enum):
@@ -47,6 +48,8 @@ class User(models.Model):
     mail = models.EmailField(unique=True, verbose_name="Email")
     phone = models.CharField(max_length=20, verbose_name="Téléphone")
     password = models.CharField(max_length=255, verbose_name="Mot de passe")
+    address = models.ForeignKey(Address, on_delete=models.CASCADE,related_name='users', verbose_name="Adresse", null=True, blank=True)
+    cart = models.ForeignKey('shop.Cart', on_delete=models.CASCADE, related_name='users', verbose_name="Panier", null=True, blank=True)
     role = models.CharField(
         max_length=20, 
         choices=ROLE_CHOICES, 
