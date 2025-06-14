@@ -3,6 +3,7 @@ from colors import Colors
 import datetime
 from decimal import Decimal
 from users.models import User
+import requests
 
 class Product(models.Model):
     """Modèle représentant un produit."""
@@ -94,7 +95,7 @@ class CartItem(models.Model):
     """Modèle représentant un article dans le panier."""
     
     cart = models.ForeignKey('Cart', on_delete=models.CASCADE, related_name='items', verbose_name="Panier")
-    product = models.ForeignKey(product, on_delete=models.CASCADE, related_name='cart_items', verbose_name="Produit")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='cart_items', verbose_name="Produit")
     quantity = models.PositiveIntegerField(default=1, verbose_name="Quantité")
     
     class Meta:
@@ -134,7 +135,7 @@ class Cart(models.Model):
         cart = cls.objects.create(user=user)
         return cart
     
-    def add_product(self, product: product, quantity: int):
+    def add_product(self, product: Product, quantity: int):
         """Ajoute un produit au panier avec la quantité spécifiée."""
         if quantity <= 0:
             print(Colors.error("La quantité doit être supérieure à zéro."))
@@ -146,7 +147,7 @@ class Cart(models.Model):
         
         print(Colors.success(f"{quantity} {product.name}(s) ajouté(s) au panier."))
     
-    def remove_product(self, product: product):
+    def remove_product(self, product: Product):
         """Supprime un produit du panier."""
         try:
             cart_item = CartItem.objects.get(cart=self, product=product)
@@ -160,3 +161,168 @@ class Cart(models.Model):
         CartItem.objects.filter(cart=self).delete()
         print(Colors.success("Le panier a été vidé."))
     
+class Order(models.Model):
+    """Modèle représentant une commande.""" 
+
+    SHIPMENT_TYPES = [
+        ('standard', 'Standard'),
+        ('express', 'Express'),
+        ('pickup', 'Retrait en magasin'),
+    ]
+
+    SHIPMENT_STATUS = [
+        ('pending', 'En attente'),
+        ('processing', 'En cours de traitement'),
+        ('shipped', 'Expédiée'),
+        ('delivered', 'Livrée'),
+        ('cancelled', 'Annulée')
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders', verbose_name="Utilisateur")
+    cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name='orders', verbose_name="Panier")
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Prix total")
+    shipment_type = models.CharField(max_length=20, choices=SHIPMENT_TYPES, default='standard', verbose_name="Type d'expédition")
+    delivery_address = models.CharField(max_length=255, verbose_name="Adresse de livraison", null=True, blank=True)
+    billing_address = models.CharField(max_length=255, verbose_name="Adresse de facturation", null=True, blank=True)
+    status = models.CharField(max_length=20, default='pending', verbose_name="Statut", choices=SHIPMENT_STATUS)
+    tracking_number = models.CharField(max_length=50, verbose_name="Numéro de suivi", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
+
+    class Meta:
+        db_table = 'order'
+        verbose_name = 'Commande'
+        verbose_name_plural = 'Commandes'
+        ordering = ['created_at']
+    
+    def __str__(self):
+        return f"Commande {self.id} de {self.user.name} - Total: {self.total_price} €"
+    
+    @classmethod
+    def create_order(cls, user: User, cart: Cart):
+        """Crée une nouvelle commande à partir du panier de l'utilisateur."""
+        total_price = sum(item.get_total_price() for item in cart.items.all())
+        order = cls.objects.create(user=user, cart=cart, total_price=total_price)
+        return order
+    
+    def set_tracking_number(self, tracking_number: str):
+        """Définit le numéro de suivi de la commande."""
+        self.tracking_number = tracking_number
+        self.save()
+    
+    def get_order_items(self):
+        """Récupère les articles de la commande."""
+        return self.cart.items.all()
+    
+    def get_total_price(self):
+        """Calcule le prix total de la commande."""
+        return sum(item.get_total_price() for item in self.get_order_items())
+    
+    def get_shipment_type_display(self):
+        """Renvoie une représentation lisible du type d'expédition."""
+        return dict(self.SHIPMENT_TYPES).get(self.shipment_type, 'Inconnu')
+    
+    def get_status_display(self):
+        """Renvoie une représentation lisible du statut de la commande."""
+        return dict(self.SHIPMENT_STATUS).get(self.status, 'Inconnu')
+    
+    def get_delivery_address(self):
+        """Renvoie l'adresse de livraison de la commande."""
+        return self.delivery_address if self.delivery_address else "Aucune adresse de livraison spécifiée"
+    
+    def get_billing_address(self):
+        """Renvoie l'adresse de facturation de la commande."""
+        return self.billing_address if self.billing_address else "Aucune adresse de facturation spécifiée"
+    
+    def get_order_summary(self):
+        """Renvoie un résumé de la commande."""
+        items_summary = "\n".join([f"{item.quantity} x {item.product.name} - {item.get_total_price()} €" for item in self.get_order_items()])
+        return (
+            f"Commande ID: {self.id}\n"
+            f"Utilisateur: {self.user.name}\n"
+            f"Total: {self.total_price} €\n"
+            f"Type d'expédition: {self.get_shipment_type_display()}\n"
+            f"Statut: {self.get_status_display()}\n"
+            f"Adresse de livraison: {self.get_delivery_address()}\n"
+            f"Adresse de facturation: {self.get_billing_address()}\n"
+            f"Articles:\n{items_summary}"
+        )
+    
+    def cancel_order(self):
+        """Annule la commande si elle est en attente ou en cours de traitement."""
+        if self.status in ['pending', 'processing']:
+            self.status = 'cancelled'
+            self.save()
+            print(Colors.success(f"La commande {self.id} a été annulée."))
+        else:
+            print(Colors.error(f"La commande {self.id} ne peut pas être annulée car son statut est {self.get_status_display()}."))
+    
+    def confirm_order(self):
+        """Confirme la commande si elle est en attente."""
+        if self.status == 'pending':
+            self.status = 'processing'
+            self.save()
+            print(Colors.success(f"La commande {self.id} a été confirmée et est en cours de traitement."))
+        else:
+            print(Colors.error(f"La commande {self.id} ne peut pas être confirmée car son statut est {self.get_status_display()}."))
+    
+    def update_status(self, status: str):
+        """Met manuellement à jour le statut de la commande."""
+        if status in dict(self.SHIPMENT_STATUS):
+            self.status = status
+            self.save()
+    
+    def check_delivery_status(self):
+        """Vérifie automatiquement le statut de livraison via l'API du transporteur."""
+        if not self.tracking_number:
+            return None
+        
+        try:
+            delivery_status = self._get_carrier_status()
+            if delivery_status:
+                mapped_status = self._map_carrier_status_to_order_status(delivery_status)
+                if mapped_status and mapped_status != self.status:
+                    self.status = mapped_status
+                    self.save()
+                    print(Colors.success(f"Statut de la commande {self.id} mis à jour: {self.get_status_display()}"))
+                return delivery_status
+        except Exception as e:
+            print(Colors.error(f"Erreur lors de la vérification du statut: {e}"))
+        return None
+    
+    def _get_carrier_status(self):
+        """Récupère le statut depuis l'API du transporteur selon le type d'expédition."""
+        
+        if self.shipment_type == 'standard':
+            # API Colissimo/La Poste
+            url = f"https://api.laposte.fr/suivi/v2/idships/{self.tracking_number}"
+            headers = {"X-Okapi-Key": "YOUR_API_KEY"}  # À remplacer par votre clé API
+        elif self.shipment_type == 'express':
+            # API Chronopost
+            url = f"https://www.chronopost.fr/tracking-cxf/TrackingServiceWS/track"
+            # Implémentation spécifique à Chronopost
+        else:
+            return None
+        
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('status') or data.get('eventCode')
+        except requests.RequestException:
+            pass
+        return None
+    
+    def _map_carrier_status_to_order_status(self, carrier_status):
+        """Mappe le statut du transporteur vers le statut de commande."""
+        status_mapping = {
+            # Colissimo/La Poste
+            'PC1': 'processing',  # Pris en charge
+            'ET1': 'shipped',     # En transit
+            'DI1': 'delivered',   # Distribué
+            # Chronopost
+            'SENT': 'shipped',
+            'DELIVERED': 'delivered',
+            'IN_TRANSIT': 'shipped',
+        }
+        return status_mapping.get(carrier_status)

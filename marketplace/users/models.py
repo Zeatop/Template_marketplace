@@ -49,7 +49,6 @@ class User(models.Model):
     phone = models.CharField(max_length=20, verbose_name="Téléphone")
     password = models.CharField(max_length=255, verbose_name="Mot de passe")
     address = models.ForeignKey(Address, on_delete=models.CASCADE,related_name='users', verbose_name="Adresse", null=True, blank=True)
-    cart = models.ForeignKey('shop.Cart', on_delete=models.CASCADE, related_name='users', verbose_name="Panier", null=True, blank=True)
     role = models.CharField(
         max_length=20, 
         choices=ROLE_CHOICES, 
@@ -91,6 +90,11 @@ class User(models.Model):
         )
         return user
     
+    def get_user_cart(self):
+        """Récupère le panier associé à l'utilisateur."""
+        from marketplace.shop.models import Cart
+        return Cart.objects.filter(user=self).first()
+
     def check_password(self, password):
         """Vérifie si le mot de passe fourni correspond à celui de l'utilisateur."""
         return Security.verify_password(password, self.password)
