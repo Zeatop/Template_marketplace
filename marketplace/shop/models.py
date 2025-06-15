@@ -14,6 +14,7 @@ class Product(models.Model):
     promotion_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Prix promotionnel", null=True, blank=True)
     image = models.ImageField(upload_to='products/', verbose_name="Image", null=True, blank=True)
     stock = models.PositiveIntegerField(default=0, verbose_name="Stock")
+    maxi_order_quantity = models.PositiveIntegerField(verbose_name="Quantité maximale par commande", default=9999)
     editor = models.CharField(max_length=255, verbose_name="Éditeur", null=True, blank=True)
     category = models.CharField(max_length=100, verbose_name="Catégorie", null=True, blank=True)
     release_date = models.DateField(verbose_name="Date de sortie", null=True, blank=True)
@@ -42,6 +43,13 @@ class Product(models.Model):
     def update_stock(self, stock):
         """Met à jour le stock du produit."""
         self.stock = stock
+        self.save()
+    
+    def update_maxi_order_quantity(self, quantity):
+        """Met à jour la quantité maximale par commande."""
+        if quantity <= 0:
+            raise ValueError("La quantité maximale doit être supérieure à zéro.")
+        self.maxi_order_quantity = quantity
         self.save()
     
     def update_price(self, price):
@@ -90,6 +98,37 @@ class Product(models.Model):
         else:
             self.release_date = None
         self.save()
+    
+    def get_stock_status(self):
+        """Retourne le statut du stock pour l'affichage."""
+        if self.stock == 0:
+            return "Rupture de stock"
+        elif self.stock <= 5:
+            return f"Plus que {self.stock} en stock"
+        else:
+            return "En stock"
+
+    def get_max_purchasable_quantity(self):
+        """Retourne la quantité maximale qu'on peut acheter."""
+        if not self.is_available():
+            return 0
+        
+        if self.maxi_order_quantity:
+            return min(self.stock, self.maxi_order_quantity)
+        return self.stock
+
+    def can_purchase_quantity(self, quantity):
+        """Vérifie si on peut acheter la quantité demandée."""
+        if not self.is_available():
+            return False, "Produit indisponible"
+        
+        if quantity > self.stock:
+            return False, f"Stock insuffisant (disponible: {self.stock})"
+        
+        if self.maxi_order_quantity and quantity > self.maxi_order_quantity:
+            return False, f"Quantité maximale: {self.maxi_order_quantity}"
+        
+        return True, "OK"
 
 class CartItem(models.Model):
     """Modèle représentant un article dans le panier."""
@@ -139,13 +178,57 @@ class Cart(models.Model):
         """Ajoute un produit au panier avec la quantité spécifiée."""
         if quantity <= 0:
             print(Colors.error("La quantité doit être supérieure à zéro."))
-            return
+            return False
         
-        cart_item, created = CartItem.objects.get_or_create(cart=self, product=product)
-        cart_item.quantity += quantity
+        cart_item, created = CartItem.objects.get_or_create(cart=self, product=product, defaults={'quantity': 0})
+        new_quantity = cart_item.quantity + quantity
+
+        # ✅ Utiliser la méthode utilitaire
+        can_purchase, message = product.can_purchase_quantity(new_quantity)
+        if not can_purchase:
+            print(Colors.error(message))
+            return False
+
+        cart_item.quantity = new_quantity
         cart_item.save()
         
         print(Colors.success(f"{quantity} {product.name}(s) ajouté(s) au panier."))
+        return True
+    
+    def update_product_quantity(self, product: Product, new_quantity: int):
+        """Met à jour la quantité d'un produit dans le panier."""
+        if new_quantity <= 0:
+            return self.remove_product(product)
+        
+        # ✅ Utiliser la méthode utilitaire
+        can_purchase, message = product.can_purchase_quantity(new_quantity)
+        if not can_purchase:
+            print(Colors.error(message))
+            return False
+        
+        try:
+            cart_item = CartItem.objects.get(cart=self, product=product)
+            cart_item.quantity = new_quantity
+            cart_item.save()
+            print(Colors.success(f"Quantité mise à jour: {new_quantity} {product.name}(s)"))
+            return True
+        except CartItem.DoesNotExist:
+            print(Colors.error(f"{product.name} n'est pas dans le panier."))
+            return False
+
+    def get_total_price(self):
+        """Calcule le prix total de tous les articles dans le panier."""
+        total_price = sum(item.get_total_price() for item in self.items.all())
+        return total_price
+    
+    def get_cart_items(self):
+        """Récupère tous les articles du panier."""
+        return self.items.all()
+    
+    def get_total_quantity(self):
+        """Calcule la quantité totale de produits dans le panier."""
+        total_quantity = sum(item.quantity for item in self.items.all())
+        return total_quantity
     
     def remove_product(self, product: Product):
         """Supprime un produit du panier."""
@@ -161,6 +244,50 @@ class Cart(models.Model):
         CartItem.objects.filter(cart=self).delete()
         print(Colors.success("Le panier a été vidé."))
     
+    def validate_cart(self):
+        """Valide que tous les produits du panier sont encore disponibles."""
+        invalid_items = []
+        
+        for item in self.items.all():
+            can_purchase, message = item.product.can_purchase_quantity(item.quantity)
+            if not can_purchase:
+                invalid_items.append({
+                    'item': item,
+                    'error': message
+                })
+        
+        return len(invalid_items) == 0, invalid_items
+
+    def get_cart_summary(self):
+        """Retourne un résumé du panier avec les statuts de stock."""
+        summary = []
+        for item in self.items.all():
+            summary.append({
+                'product': item.product.name,
+                'quantity': item.quantity,
+                'max_available': item.product.get_max_purchasable_quantity(),
+                'stock_status': item.product.get_stock_status(),
+                'total_price': item.get_total_price()
+            })
+        return summary
+
+    def fix_invalid_quantities(self):
+        """Corrige automatiquement les quantités invalides dans le panier."""
+        fixed_items = []
+        
+        for item in self.items.all():
+            max_quantity = item.product.get_max_purchasable_quantity()
+            if item.quantity > max_quantity:
+                if max_quantity > 0:
+                    item.quantity = max_quantity
+                    item.save()
+                    fixed_items.append(f"{item.product.name}: réduit à {max_quantity}")
+                else:
+                    item.delete()
+                    fixed_items.append(f"{item.product.name}: supprimé (indisponible)")
+        
+        return fixed_items
+
 class Order(models.Model):
     """Modèle représentant une commande.""" 
 
@@ -201,9 +328,41 @@ class Order(models.Model):
     @classmethod
     def create_order(cls, user: User, cart: Cart):
         """Crée une nouvelle commande à partir du panier de l'utilisateur."""
-        total_price = sum(item.get_total_price() for item in cart.items.all())
-        order = cls.objects.create(user=user, cart=cart, total_price=total_price)
-        return order
+        if not cart.items.exists():
+            print(Colors.error("Le panier est vide."))
+            return None
+        
+        is_valid, invalid_items = cart.validate_cart()
+        if not is_valid:
+            print(Colors.error("Impossible de créer la commande :"))
+            for invalid in invalid_items:
+                print(Colors.error(f"- {invalid['item'].product.name}: {invalid['error']}"))
+            return None
+        
+        from django.db import transaction
+        
+        with transaction.atomic():
+            # ✅ Utiliser les méthodes utilitaires
+            for item in cart.items.all():
+                product = Product.objects.select_for_update().get(id=item.product.id)
+                
+                can_purchase, message = product.can_purchase_quantity(item.quantity)
+                if not can_purchase:
+                    print(Colors.error(f"{product.name}: {message}"))
+                    return None
+            
+            # Si tout est OK, créer la commande
+            total_price = cart.get_total_price()
+            order = cls.objects.create(user=user, cart=cart, total_price=total_price)
+            
+            # Réduire le stock de tous les produits
+            for item in cart.items.all():
+                product = Product.objects.select_for_update().get(id=item.product.id)
+                product.stock -= item.quantity
+                product.save()
+            
+            print(Colors.success(f"Commande {order.id} créée avec succès."))
+            return order
     
     def set_tracking_number(self, tracking_number: str):
         """Définit le numéro de suivi de la commande."""
@@ -251,11 +410,23 @@ class Order(models.Model):
     def cancel_order(self):
         """Annule la commande si elle est en attente ou en cours de traitement."""
         if self.status in ['pending', 'processing']:
-            self.status = 'cancelled'
-            self.save()
-            print(Colors.success(f"La commande {self.id} a été annulée."))
+            from django.db import transaction
+            
+            with transaction.atomic():
+                # Remettre le stock en place
+                for item in self.get_order_items():
+                    product = item.product
+                    product.stock += item.quantity
+                    product.save()
+                
+                self.status = 'cancelled'
+                self.save()
+                
+            print(Colors.success(f"La commande {self.id} a été annulée et le stock a été remis en place."))
+            return True
         else:
             print(Colors.error(f"La commande {self.id} ne peut pas être annulée car son statut est {self.get_status_display()}."))
+            return False
     
     def confirm_order(self):
         """Confirme la commande si elle est en attente."""
