@@ -1,6 +1,6 @@
 from django.db import models
 from enum import Enum, auto
-from marketplace.security.models import Security
+from django.contrib.auth.models import AbstractUser
 
 import bcrypt
 
@@ -34,8 +34,8 @@ class Address(models.Model):
     def __str__(self):
         return f"{self.street}, {self.city}, {self.postal_code}, {self.country}"
 
-class User(models.Model):
-    """Modèle représentant un utilisateur du CRM."""
+class User(AbstractUser):
+    """Modèle utilisateur personnalisé héritant d'AbstractUser."""
     
     ROLE_CHOICES = [
         (UserRole.SUPPORT.value, 'Support'),
@@ -44,18 +44,31 @@ class User(models.Model):
         (UserRole.CLIENT.value, 'Client'),
     ]
     
-    name = models.CharField(max_length=255, verbose_name="Nom")
-    mail = models.EmailField(unique=True, verbose_name="Email")
-    phone = models.CharField(max_length=20, verbose_name="Téléphone")
-    password = models.CharField(max_length=255, verbose_name="Mot de passe")
-    address = models.ForeignKey(Address, on_delete=models.CASCADE,related_name='users', verbose_name="Adresse", null=True, blank=True)
+    email = models.EmailField(unique=True, verbose_name="Email")
+    name = models.CharField(max_length=255, verbose_name="Nom", blank=True)
+    surname = models.CharField(max_length=255, verbose_name="Prénom", null=True, blank=True)
+    phone = models.CharField(max_length=20, verbose_name="Téléphone", blank=True)
+    address = models.ForeignKey(
+        Address, 
+        on_delete=models.CASCADE,
+        related_name='users', 
+        verbose_name="Adresse", 
+        null=True, 
+        blank=True
+    )
     role = models.CharField(
         max_length=20, 
         choices=ROLE_CHOICES, 
-        verbose_name="Rôle"
+        verbose_name="Rôle",
+        default=UserRole.CLIENT.value  # ✅ Rôle par défaut
     )
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
+    
+    # ✅ AbstractUser a déjà date_joined, mais on peut ajouter updated_at
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
+
+    # ✅ Configuration pour l'authentification
+    USERNAME_FIELD = 'email'  # Utiliser email au lieu de username
+    REQUIRED_FIELDS = ['name']  # Champs requis lors de createsuperuser
 
     class Meta:
         db_table = 'user'
@@ -64,7 +77,7 @@ class User(models.Model):
         ordering = ['name']
     
     def __str__(self):
-        return self.name
+        return self.email
 
     @property
     def get_permission(self):
@@ -73,36 +86,39 @@ class User(models.Model):
             UserRole.SUPPORT.value: Permissions.LOGISTIC_TEAM,
             UserRole.COMMERCIAL.value: Permissions.COMMERCIAL_TEAM,
             UserRole.MANAGEMENT.value: Permissions.MANAGEMENT_TEAM,
-            UserRole.CLIENT.value: Permissions.LOGISTIC_TEAM,
+            UserRole.CLIENT.value: Permissions.CLIENT,  # ✅ Plus logique
         }
         return role_permissions.get(self.role)
         
     @classmethod
     def create_user(cls, account_infos: dict):
         """Crée un nouvel utilisateur avec les informations fournies."""
-        hashed_password = Security.hash_password(account_infos["password"])
-        user = cls.objects.create(
-            name=account_infos["name"], 
-            mail=account_infos["mail"],
-            phone=account_infos["phone"], 
-            password=hashed_password,
-            role=account_infos["role"]
+
+        address_data = account_infos.pop("address", None)
+        
+        # Créer l'adresse si fournie
+        address = None
+        if address_data:
+            address = Address.objects.create(**address_data)
+        
+        # ✅ Utiliser create_user d'AbstractUser
+        user = cls.objects.create_user(
+            email=account_infos["email"],  # ✅ email au lieu de mail
+            password=account_infos["password"],  # ✅ Hashage automatique
+            name=account_infos.get("name", ""),
+            surname=account_infos.get("surname", ""),
+            phone=account_infos.get("phone", ""),
+            role=account_infos.get("role", UserRole.CLIENT.value),
+            address=address
         )
         return user
     
+
     def get_user_cart(self):
         """Récupère le panier associé à l'utilisateur."""
         from marketplace.shop.models import Cart
         return Cart.objects.filter(user=self).first()
 
-    def check_password(self, password):
-        """Vérifie si le mot de passe fourni correspond à celui de l'utilisateur."""
-        return Security.verify_password(password, self.password)
-    
-    def set_password(self, password):
-        """Définit un nouveau mot de passe pour l'utilisateur."""
-        self.password = Security.hash_password(password)
-        self.save()
     
     def is_management(self):
         """Vérifie si l'utilisateur fait partie de l'équipe de management."""
@@ -115,3 +131,7 @@ class User(models.Model):
     def is_support(self):
         """Vérifie si l'utilisateur fait partie de l'équipe support."""
         return self.role == UserRole.SUPPORT.value
+    
+    def is_client(self):
+        """Vérifie si l'utilisateur est un client."""
+        return self.role == UserRole.CLIENT.value
