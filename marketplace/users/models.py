@@ -2,21 +2,17 @@ from django.db import models
 from enum import Enum, auto
 from django.contrib.auth.models import AbstractUser
 
-import bcrypt
-
 class Permissions(Enum):
     """Définit les niveaux de permission dans l'application."""
-    MANAGEMENT_TEAM = auto()
-    LOGISTIC_TEAM = auto()
-    COMMERCIAL_TEAM = auto()
+    WORKER = auto()
+    ADMIN = auto()
     CLIENT = auto()
 
 class UserRole(Enum):
     """Définit les rôles utilisateur disponibles."""
-    SUPPORT = "support"
-    COMMERCIAL = "commercial"
-    MANAGEMENT = "Management"
-    CLIENT = "client"
+    WORKER = "Worker"
+    ADMIN = "Admin"
+    CLIENT = "Client"
 
 class Address(models.Model):
     """Modèle représentant une adresse associée à un utilisateur."""
@@ -38,9 +34,8 @@ class User(AbstractUser):
     """Modèle utilisateur personnalisé héritant d'AbstractUser."""
     
     ROLE_CHOICES = [
-        (UserRole.SUPPORT.value, 'Support'),
-        (UserRole.COMMERCIAL.value, 'Commercial'),
-        (UserRole.MANAGEMENT.value, 'Management'),
+        (UserRole.WORKER.value, 'Worker'),
+        (UserRole.ADMIN.value, 'Admin'),
         (UserRole.CLIENT.value, 'Client'),
     ]
     
@@ -83,9 +78,8 @@ class User(AbstractUser):
     def get_permission(self):
         """Renvoie les permissions associées au rôle de l'utilisateur."""
         role_permissions = {
-            UserRole.SUPPORT.value: Permissions.LOGISTIC_TEAM,
-            UserRole.COMMERCIAL.value: Permissions.COMMERCIAL_TEAM,
-            UserRole.MANAGEMENT.value: Permissions.MANAGEMENT_TEAM,
+            UserRole.WORKER.value: Permissions.WORKER,  # ✅ Plus logique
+            UserRole.ADMIN.value: Permissions.ADMIN,  # ✅ Plus logique
             UserRole.CLIENT.value: Permissions.CLIENT,  # ✅ Plus logique
         }
         return role_permissions.get(self.role)
@@ -101,36 +95,52 @@ class User(AbstractUser):
         if address_data:
             address = Address.objects.create(**address_data)
         
+        is_staff = False
+        is_superuser = False
+        role = account_infos.get("role", UserRole.CLIENT.value)
+        if role == UserRole.ADMIN.value:
+            is_staff = True
+            is_superuser = True
+        elif role == UserRole.WORKER.value:
+            is_staff = True
+
+
+        
         # ✅ Utiliser create_user d'AbstractUser
         user = cls.objects.create_user(
+            username=account_infos["email"],
             email=account_infos["email"],  # ✅ email au lieu de mail
             password=account_infos["password"],  # ✅ Hashage automatique
             name=account_infos.get("name", ""),
             surname=account_infos.get("surname", ""),
             phone=account_infos.get("phone", ""),
-            role=account_infos.get("role", UserRole.CLIENT.value),
+            role=role,
+            is_staff=is_staff,
+            is_superuser=is_superuser,
             address=address
         )
-        return user
-    
+        return user    
 
     def get_user_cart(self):
         """Récupère le panier associé à l'utilisateur."""
         from marketplace.shop.models import Cart
         return Cart.objects.filter(user=self).first()
+    
+    def has_admin_access(self):
+        """Vérifie si l'utilisateur a les droits admin."""
+        return self.is_superuser
+    
+    def has_staff_access(self):
+        """Vérifie si l'utilisateur a les droits staff."""
+        return self.is_staff
 
+    def is_admin(self):
+        """Vérifie si l'utilisateur est administrateur."""
+        return self.role == UserRole.ADMIN.value
     
-    def is_management(self):
-        """Vérifie si l'utilisateur fait partie de l'équipe de management."""
-        return self.role == UserRole.MANAGEMENT.value
-    
-    def is_commercial(self):
-        """Vérifie si l'utilisateur fait partie de l'équipe commerciale."""
-        return self.role == UserRole.COMMERCIAL.value
-    
-    def is_support(self):
-        """Vérifie si l'utilisateur fait partie de l'équipe support."""
-        return self.role == UserRole.SUPPORT.value
+    def is_worker(self):
+        """Vérifie si l'utilisateur est un worker."""
+        return self.role == UserRole.WORKER.value
     
     def is_client(self):
         """Vérifie si l'utilisateur est un client."""
