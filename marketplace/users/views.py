@@ -18,7 +18,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if self.action == 'register':  # Inscription
             permission_classes = [AllowAny]
         elif self.action == 'update_profile':
-            permission_classes = [IsAuthenticated, IsAdminUser, IsSuperUser]
+            permission_classes = [IsAuthenticated]
         else:
             permission_classes = [IsAuthenticated]
         return [permission() for permission in permission_classes]
@@ -58,8 +58,8 @@ class UserViewSet(viewsets.ModelViewSet):
             })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    @action(detail=True, methods=['delete'], permission_classes=[IsSuperUser])
-    def delete_profile(self, request, pk=None):
+    @action(detail=False, methods=['delete'], permission_classes=[IsSuperUser])
+    def delete_profile(self, request):
         """Supprime le profil utilisateur - propriétaire ou admin seulement."""
         email = request.data.get('email')
         if not email:
@@ -77,8 +77,8 @@ class UserViewSet(viewsets.ModelViewSet):
                 'error': 'Utilisateur introuvable'
             }, status=status.HTTP_404_NOT_FOUND)
     
-    @action(detail=True, methods=['delete'], permission_classes=[IsAuthenticated])
-    def delete_me(self, request, pk=None):
+    @action(detail=False, methods=['delete'], permission_classes=[IsAuthenticated])
+    def delete_me(self, request):
         """Supprime le profil utilisateur - propriétaire ou admin seulement."""
         password = request.data.get('password')
         if not password:
@@ -96,38 +96,3 @@ class UserViewSet(viewsets.ModelViewSet):
             'message': 'Profil supprimé'
         }, status=status.HTTP_204_NO_CONTENT)
 
-    '''
-    Optionnel avec JWT pour la gestion des sessions
-    Avec JWT, il n'y en a pas besoin.
-    '''
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
-    def login(self, request):
-        """Connexion utilisateur."""
-        email = request.data.get('email')
-        password = request.data.get('password')
-        
-        if not email or not password:
-            return Response({
-                'error': 'Email et mot de passe requis'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        user = authenticate(request, username=email, password=password)
-        if user:
-            login(request, user)
-            return Response({
-                'message': 'Connexion réussie',
-                'user': UserSerializer(user).data
-            }, status=status.HTTP_200_OK)
-        
-        return Response({
-            'error': 'Email ou mot de passe incorrect'
-        }, status=status.HTTP_401_UNAUTHORIZED)
-    
-    @action(detail=False, methods=['post'])
-    def logout(self, request):
-        """Déconnexion utilisateur."""
-        logout(request)
-        return Response({
-            'message': 'Déconnexion réussie'
-        }, status=status.HTTP_200_OK)
-    

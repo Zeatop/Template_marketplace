@@ -45,8 +45,13 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         """Valide l'unicité de l'email."""
-        if User.objects.filter(email=value).exists():
-            raise serializers.ValidationError("Un compte avec cet email existe déjà.")
+        if not self.instance:
+            if User.objects.filter(email=value).exists():
+                raise serializers.ValidationError("Un compte avec cet email existe déjà.")
+        else:
+            # Pour une mise à jour (instance existe)
+            if User.objects.filter(email=value).exclude(id=self.instance.id).exists():
+                raise serializers.ValidationError("Un compte avec cet email existe déjà.")
         return value
     
     def validate_password(self, value):
