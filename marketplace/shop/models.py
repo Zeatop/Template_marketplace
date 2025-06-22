@@ -18,6 +18,7 @@ class Product(models.Model):
     editor = models.CharField(max_length=255, verbose_name="Éditeur", null=True, blank=True)
     category = models.CharField(max_length=100, verbose_name="Catégorie", null=True, blank=True)
     release_date = models.DateField(verbose_name="Date de sortie", null=True, blank=True)
+    preorder = models.BooleanField(default=False, verbose_name="Précommande")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
 
@@ -36,7 +37,15 @@ class Product(models.Model):
         product = cls.objects.create(
             name=product_infos["name"], 
             description=product_infos["description"], 
-            price=Decimal(product_infos["price"])
+            price=Decimal(product_infos["price"]),
+            promotion_price=Decimal(product_infos.get("promotion_price", 0)),
+            stock=product_infos["stock"],
+            maxi_order_quantity=product_infos["max_order_quantity"],
+            category=product_infos.get("category", ""),
+            image=product_infos.get("image", None),
+            preorder=product_infos.get("preorder", False),
+            release_date=product_infos.get("release_date", None),
+            editor=product_infos.get("editor", "")
         )
         return product
     
@@ -146,7 +155,8 @@ class CartItem(models.Model):
     def __str__(self):
         return f"{self.quantity} x {self.product.name} dans le panier {self.cart.id}"
     
-    def get_total_price(self):
+    @property
+    def total_price(self):
         """Calcule le prix total de l'article dans le panier."""
         if self.product.is_on_promotion():
             return self.quantity * self.product.promotion_price
@@ -216,16 +226,19 @@ class Cart(models.Model):
             print(Colors.error(f"{product.name} n'est pas dans le panier."))
             return False
 
-    def get_total_price(self):
+    @property
+    def total_price(self):
         """Calcule le prix total de tous les articles dans le panier."""
-        total_price = sum(item.get_total_price() for item in self.items.all())
+        total_price = sum(item.total_price for item in self.items.all())
         return total_price
-    
-    def get_cart_items(self):
+
+    @property
+    def cart_items(self):
         """Récupère tous les articles du panier."""
         return self.items.all()
-    
-    def get_total_quantity(self):
+
+    @property
+    def total_quantity(self):
         """Calcule la quantité totale de produits dans le panier."""
         total_quantity = sum(item.quantity for item in self.items.all())
         return total_quantity
@@ -267,7 +280,7 @@ class Cart(models.Model):
                 'quantity': item.quantity,
                 'max_available': item.product.get_max_purchasable_quantity(),
                 'stock_status': item.product.get_stock_status(),
-                'total_price': item.get_total_price()
+                'total_price': item.total_price
             })
         return summary
 
@@ -312,7 +325,7 @@ class Order(models.Model):
     delivery_address = models.CharField(max_length=255, verbose_name="Adresse de livraison", null=True, blank=True)
     billing_address = models.CharField(max_length=255, verbose_name="Adresse de facturation", null=True, blank=True)
     status = models.CharField(max_length=20, default='pending', verbose_name="Statut", choices=SHIPMENT_STATUS)
-    tracking_number = models.CharField(max_length=50, verbose_name="Numéro de suivi", null=True, blank=True)
+    tracking_number = models.CharField(max_length=50, verbose_name="Numéro de suivi", null=True, blank=True, default="Non défini")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
 
@@ -329,53 +342,53 @@ class Order(models.Model):
     def create_order(cls, user: User, cart: Cart):
         """Crée une nouvelle commande à partir du panier de l'utilisateur."""
         if not cart.items.exists():
-            print(Colors.error("Le panier est vide."))
-            return None
+            return None, ["Le panier est vide."]
         
         is_valid, invalid_items = cart.validate_cart()
         if not is_valid:
+            errors = []
             print(Colors.error("Impossible de créer la commande :"))
             for invalid in invalid_items:
-                print(Colors.error(f"- {invalid['item'].product.name}: {invalid['error']}"))
-            return None
+                product_name = invalid['item'].product.name
+                error_msg = invalid['error']
+                errors.append(f"Cet article n'est plus en stock : {product_name} - {error_msg}")
+            return None, errors
         
         from django.db import transaction
-        
-        with transaction.atomic():
-            # ✅ Utiliser les méthodes utilitaires
-            for item in cart.items.all():
-                product = Product.objects.select_for_update().get(id=item.product.id)
+        try:
+            with transaction.atomic():
+                # ✅ Utiliser les méthodes utilitaires
+                for item in cart.items.all():
+                    product = Product.objects.select_for_update().get(id=item.product.id)
+                    can_purchase, message = product.can_purchase_quantity(item.quantity)
+                    if not can_purchase:
+                        return None, [f"Cet article n'est plus en stock : {product.name} - {message}"]
                 
-                can_purchase, message = product.can_purchase_quantity(item.quantity)
-                if not can_purchase:
-                    print(Colors.error(f"{product.name}: {message}"))
-                    return None
+                # Si tout est OK, créer la commande
+                total_price = cart.total_price
+                order = cls.objects.create(user=user, cart=cart, total_price=total_price)
+                
+                # Réduire le stock de tous les produits
+                for item in cart.items.all():
+                    product = Product.objects.select_for_update().get(id=item.product.id)
+                    product.stock -= item.quantity
+                    product.save()
+                
+                print(Colors.success(f"Commande {order.id} créée avec succès."))
+                return order
             
-            # Si tout est OK, créer la commande
-            total_price = cart.get_total_price()
-            order = cls.objects.create(user=user, cart=cart, total_price=total_price)
-            
-            # Réduire le stock de tous les produits
-            for item in cart.items.all():
-                product = Product.objects.select_for_update().get(id=item.product.id)
-                product.stock -= item.quantity
-                product.save()
-            
-            print(Colors.success(f"Commande {order.id} créée avec succès."))
-            return order
-    
+        except Exception as e:
+            return None, [f"Erreur lors de la création de la commande : {str(e)}"]
+        
     def set_tracking_number(self, tracking_number: str):
         """Définit le numéro de suivi de la commande."""
         self.tracking_number = tracking_number
         self.save()
     
-    def get_order_items(self):
+    @property
+    def order_items(self):
         """Récupère les articles de la commande."""
         return self.cart.items.all()
-    
-    def get_total_price(self):
-        """Calcule le prix total de la commande."""
-        return sum(item.get_total_price() for item in self.get_order_items())
     
     def get_shipment_type_display(self):
         """Renvoie une représentation lisible du type d'expédition."""
@@ -395,7 +408,7 @@ class Order(models.Model):
     
     def get_order_summary(self):
         """Renvoie un résumé de la commande."""
-        items_summary = "\n".join([f"{item.quantity} x {item.product.name} - {item.get_total_price()} €" for item in self.get_order_items()])
+        items_summary = "\n".join([f"{item.quantity} x {item.product.name} - {item.total_price} €" for item in self.order_items])
         return (
             f"Commande ID: {self.id}\n"
             f"Utilisateur: {self.user.name}\n"
@@ -414,7 +427,7 @@ class Order(models.Model):
             
             with transaction.atomic():
                 # Remettre le stock en place
-                for item in self.get_order_items():
+                for item in self.order_items:
                     product = item.product
                     product.stock += item.quantity
                     product.save()

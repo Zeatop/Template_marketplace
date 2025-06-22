@@ -17,8 +17,8 @@ class UserViewSet(viewsets.ModelViewSet):
         """Définit les permissions selon l'action."""
         if self.action == 'register':  # Inscription
             permission_classes = [AllowAny]
-        elif self.action == 'update_profile':
-            permission_classes = [IsAuthenticated]
+        elif self.action == 'delete_profile':
+            permission_classes = [IsSuperUser]
         else:
             permission_classes = [IsAuthenticated]
         return [permission() for permission in permission_classes]

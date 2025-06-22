@@ -6,3 +6,4 @@ bcrypt==4.1.2
 sentry-sdk==1.35.0
 pytest
 pytest-cov
+djangorestframework-simplejwt
