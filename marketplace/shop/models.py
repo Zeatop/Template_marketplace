@@ -165,7 +165,7 @@ class CartItem(models.Model):
 class Cart(models.Model):
     """Modèle représentant un panier d'achat."""
     
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='carts', verbose_name="Utilisateur")
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='cart', verbose_name="Utilisateur")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
 
@@ -179,9 +179,9 @@ class Cart(models.Model):
         return f"Panier de {self.user.name} créé le {self.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
     
     @classmethod
-    def create_cart(cls, user: User):
-        """Crée un nouveau panier pour l'utilisateur."""
-        cart = cls.objects.create(user=user)
+    def get_or_create_cart(cls, user: User):
+        """Récupère ou crée le panier unique de l'utilisateur."""
+        cart, created = cls.objects.get_or_create(user=user)
         return cart
     
     def add_product(self, product: Product, quantity: int):
@@ -367,6 +367,18 @@ class Order(models.Model):
                 # Si tout est OK, créer la commande
                 total_price = cart.total_price
                 order = cls.objects.create(user=user, cart=cart, total_price=total_price)
+
+                # 🆕 Créer les OrderItems (snapshot figé)
+                for cart_item in cart.items.all():
+                    from .models import OrderItem  # Import local pour éviter les imports circulaires
+                    OrderItem.objects.create(
+                        order=order,
+                        product=cart_item.product,
+                        product_name=cart_item.product.name,  # Figer le nom
+                        quantity=cart_item.quantity,
+                        unit_price=cart_item.product.promotion_price if cart_item.product.is_on_promotion() 
+                                else cart_item.product.price  # Figer le prix
+                    )
                 
                 # Réduire le stock de tous les produits
                 for item in cart.items.all():
@@ -374,6 +386,7 @@ class Order(models.Model):
                     product.stock -= item.quantity
                     product.save()
                 
+                cart.clear_cart()
                 print(Colors.success(f"Commande {order.id} créée avec succès."))
                 return order
             
@@ -388,7 +401,7 @@ class Order(models.Model):
     @property
     def order_items(self):
         """Récupère les articles de la commande."""
-        return self.cart.items.all()
+        return self.items.all()
     
     def get_shipment_type_display(self):
         """Renvoie une représentation lisible du type d'expédition."""
@@ -427,9 +440,9 @@ class Order(models.Model):
             
             with transaction.atomic():
                 # Remettre le stock en place
-                for item in self.order_items:
-                    product = item.product
-                    product.stock += item.quantity
+                for order_item in self.items.all():
+                    product = order_item.product
+                    product.stock += order_item.quantity
                     product.save()
                 
                 self.status = 'cancelled'
@@ -510,3 +523,26 @@ class Order(models.Model):
             'IN_TRANSIT': 'shipped',
         }
         return status_mapping.get(carrier_status)
+    
+class OrderItem(models.Model):
+    """Modèle représentant un article dans une commande (snapshot figé)."""
+    
+    order = models.ForeignKey('Order', on_delete=models.CASCADE, related_name='items', verbose_name="Commande")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, verbose_name="Produit")
+    product_name = models.CharField(max_length=255, verbose_name="Nom du produit (figé)")
+    quantity = models.PositiveIntegerField(verbose_name="Quantité")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Prix unitaire (figé)")
+    
+    class Meta:
+        db_table = 'order_item'
+        verbose_name = 'Article de commande'
+        verbose_name_plural = 'Articles de commande'
+        unique_together = ('order', 'product')
+    
+    def __str__(self):
+        return f"{self.quantity} x {self.product_name} dans commande {self.order.id}"
+    
+    @property
+    def total_price(self):
+        """Prix total de cette ligne de commande."""
+        return self.quantity * self.unit_price

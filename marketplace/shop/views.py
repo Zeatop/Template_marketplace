@@ -6,7 +6,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from .filters import ProductFilter
 from .permissions import IsSuperUser
-from .models import Product, Cart, Order
+from .models import Product, Cart, Order, OrderItem
 from .serializers import ProductSerializer, CartSerializer, OrderSerializer
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -81,8 +81,114 @@ class ProductViewSet(viewsets.ModelViewSet):
         products = self.get_queryset().filter(stock__lte=5, stock__gt=0)
         serializer = self.get_serializer(products, many=True)
         return Response(serializer.data)
-    
 
+class CartViewSet(viewsets.GenericViewSet):
+    """ViewSet pour la gestion du panier utilisateur."""
+    
+    serializer_class = CartSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_or_create_cart(self):
+        """Récupère ou crée le panier de l'utilisateur."""
+        cart, created = Cart.objects.get_or_create(
+            user=self.request.user,
+            defaults={'total_price': 0.00}
+        )
+        return cart
+    
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """Récupère le panier actuel de l'utilisateur."""
+        cart = self.get_or_create_cart()
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def add_item(self, request):
+        """Ajoute un produit au panier."""
+        product_name = request.data.get('product_name')
+        quantity = int(request.data.get('quantity', 1))
+        
+        if not product_name:
+            return Response(
+                {'error': 'product_name requis'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            from urllib.parse import unquote
+            product_name = unquote(product_name)
+            product = Product.objects.get(name=product_name)
+        except Product.DoesNotExist:
+            return Response(
+                {'error': 'Produit non trouvé'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Vérification du stock
+        if product.stock < quantity:
+            return Response(
+                {'error': f'Stock insuffisant. Stock disponible: {product.stock}'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        cart = self.get_or_create_cart()
+        # Recalcul du total du panier
+        cart.calculate_total()  # Méthode à implémenter dans le modèle
+        
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=['patch'])
+    def update_quantity(self, request):
+        """Met à jour la quantité d'un produit dans le panier."""
+        product_name = request.data.get('product_name')
+        quantity = request.data.get('quantity')
+        
+        if not all([product_name, quantity is not None]):
+            return Response(
+                {'error': 'product_name et quantity requis'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        quantity = int(quantity)
+        if quantity < 0:
+            return Response(
+                {'error': 'La quantité doit être positive'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        cart = self.get_or_create_cart()
+        cart.calculate_total()
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['delete'])
+    def remove_item(self, request):
+        """Supprime un produit du panier."""
+        product_name = request.data.get('product_name')
+        
+        if not product_name:
+            return Response(
+                {'error': 'product_name requis'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        cart = self.get_or_create_cart()
+        cart.calculate_total()
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['delete'])
+    def clear(self, request):
+        """Vide complètement le panier."""
+        cart = self.get_or_create_cart()
+        
+        # cart.items.all().delete()  # Si relation avec CartItem
+        cart.calculate_total()
+        
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data)
 class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet pour la gestion des commandes."""
     
@@ -119,7 +225,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def create_from_cart(self, request):
         """Crée une commande à partir du panier actuel."""
         try:
-            cart = Cart.objects.get(user=request.user)
+            cart = request.user.cart
         except Cart.DoesNotExist:
             return Response(
                 {'error': 'Aucun panier trouvé'}, 
@@ -169,6 +275,17 @@ class OrderViewSet(viewsets.ModelViewSet):
                     delivery_address=request.data.get('delivery_address', ''),
                     billing_address=request.data.get('billing_address', '')
                 )
+
+                # Créer les OrderItems (SNAPSHOT des CartItems)
+                for cart_item in cart.items.all():
+                    OrderItem.objects.create(
+                        order=order,
+                        product=cart_item.product,
+                        product_name=cart_item.product.name,  # Figer le nom
+                        quantity=cart_item.quantity,
+                        unit_price=cart_item.product.promotion_price if cart_item.product.is_on_promotion() 
+                                else cart_item.product.price  # Figer le prix
+                    )      
                 
                 # Décrémenter le stock
                 for item in cart.items.all():
@@ -176,11 +293,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                     product.stock -= item.quantity
                     product.save()
                 
-                # Créer un nouveau panier vide pour l'utilisateur
-                Cart.objects.create(user=request.user)
-                
-                serializer = self.get_serializer(order)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
+                # 4. Vider le panier (maintenant c'est safe !)
+                cart.clear_cart()
                 
         except Exception as e:
             return Response(
@@ -379,7 +493,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         # Construire le résumé avec les items du panier
         items_summary = []
-        for item in order.cart.items.all():
+        for item in order.items.all():
             items_summary.append({
                 'product_name': item.product.name,
                 'quantity': item.quantity,
