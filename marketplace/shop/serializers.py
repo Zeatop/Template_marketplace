@@ -1,5 +1,5 @@
 from django.utils import timezone
-from .models import Product, CartItem, Cart, Order
+from .models import Product, CartItem, Cart, Order, OrderItem
 from rest_framework import serializers
 from users.serializers import UserSerializer
 
@@ -102,25 +102,35 @@ class CartSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'total_price', 'total_quantity' ,'created_at']
 
 
+class OrderItemSerializer(serializers.ModelSerializer):
+    """Serializer pour le modèle OrderItem (items figés de la commande)."""
+    
+    class Meta:
+        model = OrderItem  # ← Le nouveau modèle
+        fields = ['id', 'product', 'product_name', 'quantity', 'unit_price', 'total_price']
+        read_only_fields = ['id', 'total_price']
+
+
 class OrderSerializer(serializers.ModelSerializer):
     """Serializer pour le modèle Order."""
 
     user = UserSerializer(read_only=True)
     cart = CartSerializer(read_only=True)
+    items = OrderItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = Order
         fields = [
             'id', 'user', 'cart', 'total_price', 'shipment_type',
             'delivery_address', 'billing_address', 'tracking_number',
-            'order_items', 'status', 'created_at', 'updated_at'
+            'items', 'status', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'user', 'cart', 'order_items', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'cart', 'items', 'created_at', 'updated_at']
 
     def create(self, validated_data):
         """Crée une commande en utilisant la méthode du modèle."""
         user = self.context['request'].user  # Récupérer l'utilisateur du context
-        cart = user.carts.last()  # Ou une autre logique pour récupérer le bon panier
+        cart = user.cart
         
         # Utiliser la méthode create_order du modèle
         order, errors = Order.create_order(user=user, cart=cart)
@@ -143,3 +153,5 @@ class OrderSerializer(serializers.ModelSerializer):
         if value not in valid_types:
             raise serializers.ValidationError(f"Type d'expédition invalide. Choix : {valid_types}")
         return value
+    
+

@@ -370,7 +370,6 @@ class Order(models.Model):
 
                 # 🆕 Créer les OrderItems (snapshot figé)
                 for cart_item in cart.items.all():
-                    from .models import OrderItem  # Import local pour éviter les imports circulaires
                     OrderItem.objects.create(
                         order=order,
                         product=cart_item.product,
@@ -388,7 +387,7 @@ class Order(models.Model):
                 
                 cart.clear_cart()
                 print(Colors.success(f"Commande {order.id} créée avec succès."))
-                return order
+                return order, []
             
         except Exception as e:
             return None, [f"Erreur lors de la création de la commande : {str(e)}"]
@@ -421,7 +420,7 @@ class Order(models.Model):
     
     def get_order_summary(self):
         """Renvoie un résumé de la commande."""
-        items_summary = "\n".join([f"{item.quantity} x {item.product.name} - {item.total_price} €" for item in self.order_items])
+        items_summary = "\n".join([f"{item.quantity} x {item.product_name} - {item.total_price} €" for item in self.order_items])
         return (
             f"Commande ID: {self.id}\n"
             f"Utilisateur: {self.user.name}\n"
