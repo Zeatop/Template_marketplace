@@ -7,7 +7,7 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from .filters import ProductFilter
 from .permissions import IsSuperUser
 from .models import Product, Cart, Order, OrderItem
-from .serializers import ProductSerializer, CartSerializer, OrderSerializer
+from .serializers import ProductSerializer, CartSerializer, OrderSerializer, OrderItemSerializer
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
@@ -82,6 +82,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(products, many=True)
         return Response(serializer.data)
 
+
 class CartViewSet(viewsets.GenericViewSet):
     """ViewSet pour la gestion du panier utilisateur."""
     
@@ -90,10 +91,7 @@ class CartViewSet(viewsets.GenericViewSet):
     
     def get_or_create_cart(self):
         """Récupère ou crée le panier de l'utilisateur."""
-        cart, created = Cart.objects.get_or_create(
-            user=self.request.user,
-            defaults={'total_price': 0.00}
-        )
+        cart = Cart.get_or_create_cart(self.request.user)
         return cart
     
     @action(detail=False, methods=['get'])
@@ -125,16 +123,13 @@ class CartViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Vérification du stock
-        if product.stock < quantity:
+        cart = self.get_or_create_cart()
+        success = cart.add_product(product, quantity)
+        if not success:
             return Response(
-                {'error': f'Stock insuffisant. Stock disponible: {product.stock}'}, 
+                {'error': 'Impossible d\'ajouter le produit au panier'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        cart = self.get_or_create_cart()
-        # Recalcul du total du panier
-        cart.calculate_total()  # Méthode à implémenter dans le modèle
         
         serializer = self.get_serializer(cart)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -158,8 +153,23 @@ class CartViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        try:
+            from urllib.parse import unquote
+            product_name = unquote(product_name)
+            product = Product.objects.get(name=product_name)
+        except Product.DoesNotExist:
+            return Response(
+                {'error': 'Produit non trouvé'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
         cart = self.get_or_create_cart()
-        cart.calculate_total()
+        success = cart.update_product_quantity(product, quantity)
+        if not success:
+            return Response(
+                {'error': 'Impossible de mettre à jour la quantité'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
     
@@ -174,8 +184,18 @@ class CartViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        try:
+            from urllib.parse import unquote
+            product_name = unquote(product_name)
+            product = Product.objects.get(name=product_name)
+        except Product.DoesNotExist:
+            return Response(
+                {'error': 'Produit non trouvé'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
         cart = self.get_or_create_cart()
-        cart.calculate_total()
+        cart.remove_product(product)
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
     
@@ -183,12 +203,11 @@ class CartViewSet(viewsets.GenericViewSet):
     def clear(self, request):
         """Vide complètement le panier."""
         cart = self.get_or_create_cart()
-        
-        # cart.items.all().delete()  # Si relation avec CartItem
-        cart.calculate_total()
-        
+        cart.clear_cart()
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
+
+
 class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet pour la gestion des commandes."""
     
@@ -224,13 +243,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def create_from_cart(self, request):
         """Crée une commande à partir du panier actuel."""
-        try:
-            cart = request.user.cart
-        except Cart.DoesNotExist:
-            return Response(
-                {'error': 'Aucun panier trouvé'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+        cart = Cart.get_or_create_cart(request.user)
         
         # Vérifier que le panier n'est pas vide
         if not cart.items.exists():
@@ -265,36 +278,21 @@ class OrderViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST
                         )
                 
-                # Créer la commande
-                order = Order.objects.create(
-                    user=request.user,
-                    cart=cart,
-                    total_price=cart.total_price,
-                    status='pending',
-                    shipment_type=request.data.get('shipment_type', 'standard'),
-                    delivery_address=request.data.get('delivery_address', ''),
-                    billing_address=request.data.get('billing_address', '')
-                )
-
-                # Créer les OrderItems (SNAPSHOT des CartItems)
-                for cart_item in cart.items.all():
-                    OrderItem.objects.create(
-                        order=order,
-                        product=cart_item.product,
-                        product_name=cart_item.product.name,  # Figer le nom
-                        quantity=cart_item.quantity,
-                        unit_price=cart_item.product.promotion_price if cart_item.product.is_on_promotion() 
-                                else cart_item.product.price  # Figer le prix
-                    )      
+                order, errors = Order.create_order(user=request.user, cart=cart)
                 
-                # Décrémenter le stock
-                for item in cart.items.all():
-                    product = Product.objects.select_for_update().get(id=item.product.id)
-                    product.stock -= item.quantity
-                    product.save()
                 
-                # 4. Vider le panier (maintenant c'est safe !)
-                cart.clear_cart()
+                if not order:
+                    return Response(
+                        {'error': 'Impossible de créer la commande', 'details': errors}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                order.shipment_type = request.data.get('shipment_type', 'standard')
+                order.delivery_address = request.data.get('delivery_address', '')
+                order.billing_address = request.data.get('billing_address', '')
+                order.save()
+                serializer = self.get_serializer(order)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
                 
         except Exception as e:
             return Response(
@@ -495,11 +493,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         items_summary = []
         for item in order.items.all():
             items_summary.append({
-                'product_name': item.product.name,
+                'product_name': item.product_name,  # ✅ Nom figé
                 'quantity': item.quantity,
-                'unit_price': item.product.promotion_price if item.product.is_on_promotion() else item.product.price,
+                'unit_price': item.unit_price,  # ✅ Prix figé
                 'total_price': item.total_price,
-                'was_on_promotion': item.product.is_on_promotion()
+                'current_product_name': item.product.name,  # 🆕 Nom actuel pour info
+                'current_price': item.product.price  # 🆕 Prix actuel pour comparaison
             })
         
         summary = {
@@ -513,7 +512,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             'tracking_number': order.tracking_number,
             'created_at': order.created_at,
             'items': items_summary,
-            'total_items': order.cart.total_quantity
+            'total_items': sum(item.quantity for item in order.items.all())
         }
         
         return Response(summary)
