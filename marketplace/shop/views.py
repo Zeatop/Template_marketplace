@@ -82,10 +82,40 @@ class ProductViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(products, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminUser])
+    def bulk_create(self, request):
+        """Crée plusieurs produits d'un coup."""
+        products_data = request.data.get('products', [])
+        
+        if not isinstance(products_data, list):
+            return Response(
+                {'error': 'Le champ "products" doit être une liste'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        created_products = []
+        errors = []
+        
+        for i, product_data in enumerate(products_data):
+            serializer = self.get_serializer(data=product_data)
+            if serializer.is_valid():
+                product = serializer.save()
+                created_products.append(serializer.data)
+            else:
+                errors.append({
+                    'index': i,
+                    'data': product_data,
+                    'errors': serializer.errors
+                })
+        
+        return Response({
+            'created': len(created_products),
+            'products': created_products,
+            'errors': errors
+        }, status=status.HTTP_201_CREATED if created_products else status.HTTP_400_BAD_REQUEST)
 
 class CartViewSet(viewsets.GenericViewSet):
     """ViewSet pour la gestion du panier utilisateur."""
-    
     serializer_class = CartSerializer
     permission_classes = [IsAuthenticated]
     
