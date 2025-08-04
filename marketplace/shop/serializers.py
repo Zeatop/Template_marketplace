@@ -13,9 +13,9 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'price', 'promotion_price',
             'stock', 'maxi_order_quantity', 'category', 'image',
-            'preorder', 'release_date', 'editor', 'created_at', 'updated_at'
+            'preorder', 'release_date', 'editor', 'created_at', 'updated_at', 'stripe_product_id'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'stripe_product_id']
 
     def validate_name(self, value):
         """Valide le nom du produit."""

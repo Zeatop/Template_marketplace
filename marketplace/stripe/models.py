@@ -1,46 +1,99 @@
 from django.db import models
 import stripe
+from rest_framework.response import Response
 # Create your models here.
+
+
 class StripeManager(models.Manager):
 
     STRIPE_TEST_ACCOUNT_ID = 'acct_1RdRjNRXyOM8gdvO'
     stripe.api_key = 'sk_test_YOUR_PLATFORM_SECRET_KEY'
 
     @staticmethod
-    def create_or_retrieve_customer(email, name, connected_account_id):
-        print(f"\n--- 1. Création/Récupération du client '{email}' sur le compte connecté '{connected_account_id}' ---")
+    def create_or_retrieve_customer(email, name, stripe_account_id):
+        print(f"\n--- 1. Création/Récupération du client '{email}' sur le compte connecté '{stripe_account_id}' ---")
         try:
             # Tenter de trouver un client existant avec cet email sur le compte connecté
             customers = stripe.Customer.list(
                 email=email,
                 limit=1,
-                stripe_account=connected_account_id # IMPORTANT : Cibler le compte connecté
+                stripe_account=stripe_account_id # IMPORTANT : Cibler le compte connecté
             )
-            if customers.data:
-                customer = customers.data[0]
-                print(f"Client existant récupéré : {customer.id}")
-            else:
-                # Créer un nouveau client si non trouvé
+            if not customers.data:
                 customer = stripe.Customer.create(
                     email=email,
                     name=name,
-                    description=f"Client pour le site e-commerce de {name}",
-                    stripe_account=connected_account_id # IMPORTANT : Cibler le compte connecté
-                )
-                print(f"Nouveau client créé : {customer.id}")
+                    stripe_account=stripe_account_id # IMPORTANT : Cibler le compte connecté
+                    )
+            else:
+                customer = customers.data[0]     
             return customer
         except stripe.error.StripeError as e:
             print(f"Erreur lors de la création/récupération du client : {e}")
             return None
+        
+    @staticmethod
+    def update_customer(customer_id, data, stripe_account_id):
+        """Met à jour un customer Stripe existant."""
+        print(f"\n--- Mise à jour du customer Stripe '{customer_id}' ---")
+        
+        # Mapper les champs Django vers Stripe
+        stripe_data = {}
+        
+        if 'email' in data:
+            stripe_data['email'] = data['email']
+        
+        if 'name' in data:
+            stripe_data['name'] = f"{data['name']} {data['surname']}"
+        
+        if 'phone' in data:
+            stripe_data['phone'] = data['phone']
+        
+        # Gestion de l'adresse
+        if 'address' in data and data['address']:
+            stripe_data['address'] = {
+                'line1': data['address'].get('street', ''),
+                'city': data['address'].get('city', ''),
+                'postal_code': data['address'].get('postal_code', ''),
+                'country': data['address'].get('country', '')
+            }
+        
+        try:
+            customer = stripe.Customer.modify(
+                customer_id,
+                **stripe_data,
+                stripe_account=stripe_account_id
+            )
+            print(f"Customer mis à jour : {customer.id}")
+            return customer
+            
+        except stripe.error.StripeError as e:
+            print(f"Erreur lors de la mise à jour du customer : {e}")
+            raise
+
+    @staticmethod
+    def delete_customer(customer_id, stripe_account_id):
+        """Supprime un customer Stripe."""
+        print(f"\n--- Suppression du customer Stripe '{customer_id}' ---")
+        try:
+            stripe.Customer.delete(
+                customer_id,
+                stripe_account=stripe_account_id
+            )
+            print(f"Customer supprimé : {customer_id}")
+            return True
+        except stripe.error.StripeError as e:
+            print(f"Erreur lors de la suppression du customer : {e}")
+            return False
     
     @staticmethod
-    def attach_payment_method_to_customer(customer_id, payment_method_id, connected_account_id):
+    def attach_payment_method_to_customer(customer_id, payment_method_id, stripe_account_id):
         print(f"\n--- 2. Attachement de la Payment Method '{payment_method_id}' au client '{customer_id}' sur le compte connecté ---")
         try:
             payment_method = stripe.PaymentMethod.attach(
                 payment_method_id,
                 customer=customer_id,
-                stripe_account=connected_account_id # IMPORTANT : Cibler le compte connecté
+                stripe_account=stripe_account_id # IMPORTANT : Cibler le compte connecté
             )
             print(f"Payment Method '{payment_method.id}' attachée au client '{customer_id}'.")
             return payment_method
@@ -49,8 +102,8 @@ class StripeManager(models.Manager):
             return None
     
     @staticmethod
-    def create_direct_payment_intent(customer_id, payment_method_id, amount, currency, description, connected_account_id):
-        print(f"\n--- 3. Création d'un Payment Intent pour une Direct Charge sur le compte connecté '{connected_account_id}' ---")
+    def create_direct_payment_intent(customer_id, payment_method_id, amount, currency, description, stripe_account_id):
+        print(f"\n--- 3. Création d'un Payment Intent pour une Direct Charge sur le compte connecté '{stripe_account_id}' ---")
         try:
             # Créer le Payment Intent
             payment_intent = stripe.PaymentIntent.create(
@@ -62,7 +115,7 @@ class StripeManager(models.Manager):
                 confirm=True,           # Tenter de confirmer le paiement immédiatement
                 description=description,
                 # IMPORTANT : Utilisez 'stripe_account' pour que la charge soit effectuée sur le compte connecté
-                stripe_account=connected_account_id
+                stripe_account=stripe_account_id
             )
             print(f"Payment Intent créé/confirmé : {payment_intent.id}")
             print(f"Statut du Payment Intent : {payment_intent.status}")
@@ -73,15 +126,15 @@ class StripeManager(models.Manager):
             return None
         
     @staticmethod
-    def perform_payment(email, name, payment_method_id, amount, currency, description, connected_account_id):
+    def perform_payment(email, name, payment_method_id, amount, currency, description, stripe_account_id):
         print(f"\n--- 4. Démarrage du processus de paiement pour '{email}' ---")
         # Étape 1 : Créer ou récupérer le client
-        customer = StripeManager.create_or_retrieve_customer(email, name, connected_account_id)
+        customer = StripeManager.create_or_retrieve_customer(email, name, stripe_account_id)
         if not customer:
             return None
         
         # Étape 2 : Attacher la Payment Method au client
-        payment_method = StripeManager.attach_payment_method_to_customer(customer.id, payment_method_id, connected_account_id)
+        payment_method = StripeManager.attach_payment_method_to_customer(customer.id, payment_method_id, stripe_account_id)
         if not payment_method:
             return None
         
@@ -92,21 +145,21 @@ class StripeManager(models.Manager):
             amount,
             currency,
             description,
-            connected_account_id
+            stripe_account_id
         )
         
         return payment_intent
     
     @staticmethod
-    def create_or_retrieve_product(name, description, connected_account_id):
-        print(f"\n--- Création/Récupération du produit '{name}' sur le compte connecté '{connected_account_id}' ---")
+    def create_or_retrieve_product(name, description, stripe_account_id):
+        print(f"\n--- Création/Récupération du produit '{name}' sur le compte connecté '{stripe_account_id}' ---")
         try:
             # Tenter de trouver un produit existant avec ce nom
             products = stripe.Product.list(
                 limit=1,
                 active=True,
                 name=name,
-                stripe_account=connected_account_id # Cibler le compte connecté
+                stripe_account=stripe_account_id # Cibler le compte connecté
             )
             if products.data:
                 product = products.data[0]
@@ -116,7 +169,7 @@ class StripeManager(models.Manager):
                 product = stripe.Product.create(
                     name=name,
                     description=description,
-                    stripe_account=connected_account_id # Cibler le compte connecté
+                    stripe_account=stripe_account_id # Cibler le compte connecté
                 )
                 print(f"Nouveau produit créé : {product.id}")
             return product
@@ -125,8 +178,8 @@ class StripeManager(models.Manager):
             return None
 
     @staticmethod
-    def create_or_retrieve_price(product_id, unit_amount, currency, connected_account_id, nickname="Standard Price"):
-        print(f"\n--- Création/Récupération du prix pour le produit '{product_id}' avec un montant de {unit_amount} {currency} sur le compte connecté '{connected_account_id}' ---")
+    def create_or_retrieve_price(product_id, unit_amount, currency, stripe_account_id, nickname="Standard Price"):
+        print(f"\n--- Création/Récupération du prix pour le produit '{product_id}' avec un montant de {unit_amount} {currency} sur le compte connecté '{stripe_account_id}' ---")
         try:
             # Tenter de trouver un prix existant pour ce produit et ce montant
             # Il n'y a pas de recherche directe par unit_amount + product_id via list,
@@ -137,7 +190,7 @@ class StripeManager(models.Manager):
                 nickname=nickname, # Filtrer par nom por Standard Price et Promo Price
                 limit=100, # Augmenter la limite pour s'assurer de récupérer tous les prix
                 active=True,
-                stripe_account=connected_account_id if connected_account_id else None # Cibler le compte connecté si fourni
+                stripe_account=stripe_account_id if stripe_account_id else None # Cibler le compte connecté si fourni
             )
             
             found_price = None
@@ -156,7 +209,7 @@ class StripeManager(models.Manager):
                     unit_amount=unit_amount, # Montant en centimes
                     currency=currency,
                     nickname=nickname, # Un nom optionnel pour le prix (ex: "Prix standard")
-                    stripe_account=connected_account_id if connected_account_id else None # Cibler le compte connecté si fourni
+                    stripe_account=stripe_account_id if stripe_account_id else None # Cibler le compte connecté si fourni
                 )
                 print(f"Nouveau prix créé : {price.id}")
             return price
@@ -165,14 +218,14 @@ class StripeManager(models.Manager):
             return None
 
     @staticmethod
-    def get_product_price(name, description, connected_account_id, unit_amount, currency):
-        print(f"\n--- Récupération du prix pour le produit '{name}' sur le compte connecté '{connected_account_id}' ---")
+    def get_product_price(name, description, stripe_account_id, unit_amount, currency):
+        print(f"\n--- Récupération du prix pour le produit '{name}' sur le compte connecté '{stripe_account_id}' ---")
         # Étape 1 : Créer ou récupérer le produit
-        product = StripeManager.create_or_retrieve_product(name, description, connected_account_id)
+        product = StripeManager.create_or_retrieve_product(name, description, stripe_account_id)
         if not product:
             return None
         
         # Étape 2 : Créer ou récupérer le prix pour ce produit
-        price = StripeManager.create_or_retrieve_price(product.id, unit_amount, currency, connected_account_id)
+        price = StripeManager.create_or_retrieve_price(product.id, unit_amount, currency, stripe_account_id)
         
         return price

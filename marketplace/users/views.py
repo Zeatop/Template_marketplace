@@ -6,6 +6,10 @@ from .permissions import IsSuperUser
 from django.contrib.auth import authenticate, login, logout
 from .models import User
 from .serializers import UserSerializer, AddressSerializer
+from stripe.models import StripeManager
+from stripe import StripeError
+from constants import STRIPE_ACCOUNT_ID  # Importer l'ID du compte Stripe
+
 
 class UserViewSet(viewsets.ModelViewSet):
     """ViewSet pour la gestion des utilisateurs."""
@@ -27,14 +31,23 @@ class UserViewSet(viewsets.ModelViewSet):
     def register(self, request):
         """Inscription d'un nouvel utilisateur."""
         serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
+        if not serializer.is_valid():
+            return Response(serializer.errors)
+        user = serializer.save()
+        stripe_customer = user.sync_user_with_stripe()
+        if not stripe_customer:
+        # ✅ Utilisateur créé mais pas synchronisé avec Stripe
             return Response({
-                'message': 'Utilisateur créé avec succès',
+                'message': 'Utilisateur créé avec succès. Synchronisation Stripe en attente.',
                 'user_id': user.id,
-                'user_mail': user.email
+                'stripe_sync': False
             }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+        return Response({
+            'message': 'Utilisateur créé et synchronisé avec succès',
+            'user': user.id,
+            'stripe_sync': True
+        }, status=status.HTTP_201_CREATED)
     
     @action(detail=False, methods=['get'])
     def profile(self, request):
@@ -45,18 +58,51 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['put'])
     def update_profile(self, request):
         """Met à jour le profil de l'utilisateur connecté."""
+
+        # 1. Validation des données
         serializer = self.get_serializer(
             request.user, 
             data=request.data, 
             partial=True
         )
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                'message': 'Profil mis à jour',
-                'user': serializer.data
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 2. Mise à jour Stripe (si customer existe)
+        user = request.user
+        stripe_user_id = user.stripe_user_id
+        if not stripe_user_id:
+            print({
+                'error': 'Aucun compte de paiement associé, synchronisation en cours...'
             })
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                user.sync_user_with_stripe()
+            except Exception as e:
+                return Response({
+                    'error': 'Erreur lors de la synchronisation de l\'utilisateur',
+                    'details': str(e)
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            StripeManager.update_customer(
+                customer_id=request.user.stripe_user_id,
+                data=serializer.validated_data,
+                stripe_account_id=STRIPE_ACCOUNT_ID
+            )
+        except stripe.error.StripeError as e:
+            return Response({
+                'error': 'Erreur lors de la mise à jour du compte de paiement',
+                'details': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 3. Mise à jour Django (seulement si Stripe a réussi)
+        serializer.save()
+        
+        return Response({
+            'message': 'Profil mis à jour',
+            'user': serializer.data
+        })
     
     @action(detail=False, methods=['delete'], permission_classes=[IsSuperUser])
     def delete_profile(self, request):
@@ -68,7 +114,9 @@ class UserViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
         try:
             user = User.objects.get(email=email)
+            StripeManager.delete_customer(user.stripe_user_id, STRIPE_ACCOUNT_ID)
             user.delete()
+            
             return Response({
                 'message': 'Profil supprimé avec succès'
             }, status=status.HTTP_204_NO_CONTENT)

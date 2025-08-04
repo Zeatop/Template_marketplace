@@ -21,6 +21,11 @@ class Product(models.Model):
     preorder = models.BooleanField(default=False, verbose_name="Précommande")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Modifié le")
+    stripe_product_id = models.CharField(
+        max_length=255, 
+        verbose_name="ID Produit Stripe", 
+        blank=True
+    )  # ID Stripe pour la gestion des paiements
 
     class Meta:
         db_table = 'product'

@@ -39,9 +39,9 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'name', 'surname', 'email', 'phone', 'password', 
-            'role', 'address', 'date_joined'
+            'role', 'address', 'date_joined', 'stripe_user_id',
         ]
-        read_only_fields = ['id', 'date_joined']
+        read_only_fields = ['id', 'date_joined', 'stripe_user_id']
 
     def validate_email(self, value):
         """Valide l'unicité de l'email."""
@@ -70,7 +70,8 @@ class UserSerializer(serializers.ModelSerializer):
             'surname': validated_data.get('surname', ''),
             'phone': validated_data.get('phone', ''),
             'role': validated_data.get('role', UserRole.CLIENT.value),
-            'address': validated_data.get('address')
+            'address': validated_data.get('address'),
+            'stripe_user_id': validated_data.get('stripe_user_id', None),
         }
         
         user = User.create_user(account_infos)

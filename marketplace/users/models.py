@@ -1,6 +1,10 @@
 from django.db import models
 from enum import Enum, auto
 from django.contrib.auth.models import AbstractUser
+from rest_framework.response import Response
+from stripe.models import StripeManager
+from stripe.error import StripeError
+from constants import STRIPE_ACCOUNT_ID  # Importer l'ID du compte Stripe
 
 class Permissions(Enum):
     """Définit les niveaux de permission dans l'application."""
@@ -43,6 +47,13 @@ class User(AbstractUser):
     name = models.CharField(max_length=255, verbose_name="Nom", blank=True)
     surname = models.CharField(max_length=255, verbose_name="Prénom", null=True, blank=True)
     phone = models.CharField(max_length=20, verbose_name="Téléphone", blank=True)
+    stripe_user_id = models.CharField(
+        max_length=255, 
+        verbose_name="ID Client Stripe", 
+        null=True, 
+        blank=True, 
+        default=None
+    )  # ✅ ID Stripe pour la gestion des paiements
     address = models.ForeignKey(
         Address, 
         on_delete=models.CASCADE,
@@ -117,9 +128,23 @@ class User(AbstractUser):
             role=role,
             is_staff=is_staff,
             is_superuser=is_superuser,
-            address=address
+            address=address,
         )
         return user    
+
+    def sync_user_with_stripe(self):
+        try:
+            stripe_customer = StripeManager.create_or_retrieve_customer(
+                email=self.email,
+                name=self.name,
+                stripe_account_id=STRIPE_ACCOUNT_ID,
+            )
+        except StripeError:
+            return Response({'error': 'Erreur lors de la création du compte de paiement'})
+        self.stripe_user_id = stripe_customer.id
+        self.save()
+        return stripe_customer
+        
 
     def get_user_cart(self):
         """Récupère le panier associé à l'utilisateur."""

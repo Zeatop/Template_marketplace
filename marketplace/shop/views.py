@@ -10,6 +10,8 @@ from .models import Product, Cart, Order, OrderItem
 from .serializers import ProductSerializer, CartSerializer, OrderSerializer, OrderItemSerializer
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from constants import STRIPE_ACCOUNT_ID
+from stripe.models import StripeManager
 
 
 User = get_user_model()
@@ -28,6 +30,50 @@ class ProductViewSet(viewsets.ModelViewSet):
     ordering_fields = ['price', 'created_at', 'release_date', 'name']
     ordering = ['name']
 
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminUser])
+    def create_product(self, request):
+        """Crée un nouveau produit."""
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        stripe_product = None
+        try:
+            # Créer le produit dans Stripe
+            stripe_product = StripeManager.create_or_retrieve_product(
+                name=serializer.validated_data['name'],
+                description=serializer.validated_data.get('description', ''),
+                stripe_account_id = STRIPE_ACCOUNT_ID
+            )
+
+        except StripeError:
+            return Response({'error': 'Erreur lors de la création du produit stripe'})
+        
+        try:
+            # Créer le produit dans Stripe
+            stripe_price = StripeManager.create_or_retrieve_price(
+                product_id=stripe_product.id,  
+                unit_amount=int(serializer.validated_data['price'] * 100),  # Convertir en cents
+                currency='eur',  # Utiliser la devise appropriée   
+                stripe_account_id = STRIPE_ACCOUNT_ID
+            )
+
+        except StripeError:
+            return Response({'error': 'Erreur lors de la création du prix associé au produit stripe'})
+        
+        try:
+            product_data = serializer.validated_data
+            product_data['stripe_product_id'] = stripe_product.id
+            user = User.create_user(user_data)
+        
+        except Exception as e:
+            # Rollback Stripe
+            StripeManager.delete_product(stripe_customer.id)
+            raise   
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
+        
+    
     def get_object(self):
 
         """Override pour gérer les caractères spéciaux dans les noms."""
