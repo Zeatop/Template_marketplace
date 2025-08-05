@@ -9,6 +9,9 @@ from stripe.error import StripeError
 from constants import STRIPE_ACCOUNT_ID
 from rest_framework.response import Response
 import logging
+import json
+from django.utils import timezone
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +365,16 @@ class Order(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders', verbose_name="Utilisateur")
     cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name='orders', verbose_name="Panier")
     total_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Prix total")
+    
+    payment_intent_id = models.CharField(
+        max_length=255,
+        verbose_name="ID Payment Intent Stripe",
+        null=True,
+        blank=True,
+        unique=True,  # Un Payment Intent = Une commande
+        db_index=True  # Index pour recherche rapide dans webhooks
+    )
+
     shipment_type = models.CharField(max_length=20, choices=SHIPMENT_TYPES, default='standard', verbose_name="Type d'expédition")
     delivery_address = models.CharField(max_length=255, verbose_name="Adresse de livraison", null=True, blank=True)
     billing_address = models.CharField(max_length=255, verbose_name="Adresse de facturation", null=True, blank=True)
@@ -375,6 +388,10 @@ class Order(models.Model):
         verbose_name = 'Commande'
         verbose_name_plural = 'Commandes'
         ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['payment_intent_id', 'status']),
+            models.Index(fields=['user', 'created_at']),
+        ]
     
     def __str__(self):
         return f"Commande {self.id} de {self.user.name} - Total: {self.total_price} €"
@@ -411,9 +428,17 @@ class Order(models.Model):
                 payment_intent = StripeManager.create_payment_intent_for_order(
                     customer_id=user.stripe_user_id,
                     amount=int(total_price * 100),  # En centimes
-                    order_id=order.id,  # 🆕 IMPORTANT : lier à la commande
+                    order_id=order.id,
                     stripe_account_id=STRIPE_ACCOUNT_ID
                 )
+                
+                if not payment_intent:
+                    # Si échec Payment Intent, annuler la commande
+                    raise Exception("Échec création Payment Intent")
+                
+                # 🔑 CRUCIAL : Sauvegarder l'ID Payment Intent
+                order.payment_intent_id = payment_intent.id
+                order.save()
 
                 # 🆕 Créer les OrderItems (snapshot figé)
                 for cart_item in cart.items.all():
@@ -444,6 +469,14 @@ class Order(models.Model):
         self.tracking_number = tracking_number
         self.save()
     
+    @classmethod
+    def get_by_payment_intent(cls, payment_intent_id):
+        """Récupère une commande par son Payment Intent ID."""
+        try:
+            return cls.objects.get(payment_intent_id=payment_intent_id)
+        except cls.DoesNotExist:
+            return None
+
     @property
     def order_items(self):
         """Récupère les articles de la commande."""
@@ -592,3 +625,205 @@ class OrderItem(models.Model):
     def total_price(self):
         """Prix total de cette ligne de commande."""
         return self.quantity * self.unit_price
+    
+class WebhookEvent(models.Model):
+    """Modèle pour traquer les événements webhook Stripe et assurer l'idempotence."""
+    
+    STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('processing', 'En cours de traitement'),
+        ('success', 'Traité avec succès'),
+        ('failed', 'Échec'),
+        ('retry', 'En attente de retry'),
+        ('max_retries_exceeded', 'Nombre max de tentatives dépassé'),
+    ]
+    
+    # Identifiants Stripe
+    stripe_event_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        verbose_name="ID Événement Stripe"
+    )
+    
+    event_type = models.CharField(
+        max_length=100,
+        db_index=True,
+        verbose_name="Type d'événement"
+    )
+    
+    # Contenu de l'événement
+    event_data = models.JSONField(
+        verbose_name="Données de l'événement",
+        help_text="Contenu complet de l'événement Stripe"
+    )
+    
+    # Statut du traitement
+    status = models.CharField(
+        max_length=30,
+        choices=STATUS_CHOICES,
+        default='pending',
+        db_index=True,
+        verbose_name="Statut de traitement"
+    )
+    
+    # Gestion des retries
+    retry_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Nombre de tentatives"
+    )
+    
+    max_retries = models.PositiveIntegerField(
+        default=3,
+        verbose_name="Nombre maximum de tentatives"
+    )
+    
+    next_retry_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Prochaine tentative à"
+    )
+    
+    # Logs et erreurs
+    processing_logs = models.JSONField(
+        default=list,
+        verbose_name="Logs de traitement"
+    )
+    
+    error_message = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name="Message d'erreur"
+    )
+    
+    # Métadonnées
+    processed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Traité le"
+    )
+    
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="Reçu le"
+    )
+    
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Modifié le"
+    )
+
+    class Meta:
+        db_table = 'webhook_event'
+        verbose_name = 'Événement Webhook'
+        verbose_name_plural = 'Événements Webhook'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['stripe_event_id']),
+            models.Index(fields=['event_type', 'status']),
+            models.Index(fields=['status', 'next_retry_at']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"Webhook {self.event_type} - {self.stripe_event_id} ({self.status})"
+
+    @classmethod
+    def is_already_processed(cls, stripe_event_id):
+        """Vérifie si un événement a déjà été traité (idempotence)."""
+        return cls.objects.filter(
+            stripe_event_id=stripe_event_id,
+            status__in=['success', 'max_retries_exceeded']
+        ).exists()
+
+    @classmethod
+    def create_from_stripe_event(cls, stripe_event):
+        """Crée un WebhookEvent à partir d'un événement Stripe."""
+        webhook_event, created = cls.objects.get_or_create(
+            stripe_event_id=stripe_event['id'],
+            defaults={
+                'event_type': stripe_event['type'],
+                'event_data': stripe_event,
+                'status': 'pending'
+            }
+        )
+        return webhook_event, created
+
+    def add_log(self, message, level='info'):
+        """Ajoute un log de traitement."""
+        log_entry = {
+            'timestamp': timezone.now().isoformat(),
+            'level': level,
+            'message': message,
+            'retry_count': self.retry_count
+        }
+        
+        if not isinstance(self.processing_logs, list):
+            self.processing_logs = []
+            
+        self.processing_logs.append(log_entry)
+        self.save(update_fields=['processing_logs', 'updated_at'])
+
+    def mark_as_processing(self):
+        """Marque l'événement comme en cours de traitement."""
+        self.status = 'processing'
+        self.add_log("Début du traitement de l'événement")
+        self.save(update_fields=['status', 'updated_at'])
+
+    def mark_as_success(self, message="Traitement réussi"):
+        """Marque l'événement comme traité avec succès."""
+        self.status = 'success'
+        self.processed_at = timezone.now()
+        self.error_message = None
+        self.add_log(message, 'success')
+        self.save(update_fields=['status', 'processed_at', 'error_message', 'updated_at'])
+
+    def mark_as_failed(self, error_message, should_retry=True):
+        """Marque l'événement comme échoué et programme un retry si nécessaire."""
+        self.error_message = error_message
+        self.add_log(f"Échec: {error_message}", 'error')
+        
+        if should_retry and self.retry_count < self.max_retries:
+            self.retry_count += 1
+            self.status = 'retry'
+            
+            # Backoff exponentiel : 2^retry_count minutes
+            delay_minutes = 2 ** self.retry_count
+            self.next_retry_at = timezone.now() + timedelta(minutes=delay_minutes)
+            
+            self.add_log(f"Programmation retry #{self.retry_count} dans {delay_minutes} minutes")
+            
+        else:
+            self.status = 'max_retries_exceeded'
+            self.add_log("Nombre maximum de tentatives atteint", 'error')
+        
+        self.save(update_fields=[
+            'status', 'retry_count', 'next_retry_at', 
+            'error_message', 'updated_at'
+        ])
+
+    def can_retry(self):
+        """Vérifie si l'événement peut être retrié."""
+        return (
+            self.status == 'retry' and
+            self.next_retry_at and
+            timezone.now() >= self.next_retry_at
+        )
+
+    @classmethod
+    def get_events_to_retry(cls):
+        """Récupère les événements prêts à être retriés."""
+        return cls.objects.filter(
+            status='retry',
+            next_retry_at__lte=timezone.now()
+        ).order_by('next_retry_at')
+
+    @classmethod
+    def cleanup_old_events(cls, days=30):
+        """Nettoie les anciens événements (à exécuter périodiquement)."""
+        cutoff_date = timezone.now() - timedelta(days=days)
+        deleted_count = cls.objects.filter(
+            created_at__lt=cutoff_date,
+            status__in=['success', 'max_retries_exceeded']
+        ).delete()[0]
+        return deleted_count
