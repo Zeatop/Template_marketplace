@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'users',
     'security',
     'shop',
+    'django_ratelimit',
 ]
 
 MIDDLEWARE = [
@@ -72,6 +73,10 @@ TEMPLATES = [
         },
     },
 ]
+
+# Cache et rate_limit settings
+RATELIMIT_USE_CACHE = 'default'  
+RATELIMIT_ENABLE = True
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

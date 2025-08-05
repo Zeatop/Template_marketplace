@@ -9,6 +9,9 @@ from .serializers import UserSerializer, AddressSerializer
 from stripe.models import StripeManager
 from stripe import StripeError
 from constants import STRIPE_ACCOUNT_ID  # Importer l'ID du compte Stripe
+from django_ratelimit.decorators import ratelimit
+from django.utils.decorators import method_decorator
+from django_ratelimit.core import is_ratelimited
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -27,9 +30,17 @@ class UserViewSet(viewsets.ModelViewSet):
             permission_classes = [IsAuthenticated]
         return [permission() for permission in permission_classes]
     
+    @method_decorator(ratelimit(key='ip', rate='5/h', method='POST'))
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def register(self, request):
         """Inscription d'un nouvel utilisateur."""
+
+        if is_ratelimited(request, group='register', key='ip', rate='5/h', increment=True):
+            return Response({
+                'error': 'Trop de tentatives d\'inscription. Réessayez dans 1 heure.',
+                'retry_after': 3600  # en secondes
+            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors)

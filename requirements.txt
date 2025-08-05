@@ -8,4 +8,5 @@ pytest
 pytest-cov
 djangorestframework-simplejwt
 django-filter
+django-ratelimit
 stripe
