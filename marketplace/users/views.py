@@ -138,7 +138,7 @@ class UserViewSet(viewsets.ModelViewSet):
             return Response({
                 'error': 'Mot de passe incorrect'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+        StripeManager.delete_customer(request.user.stripe_user_id, STRIPE_ACCOUNT_ID)
         request.user.delete()
         return Response({
             'message': 'Profil supprimé'
