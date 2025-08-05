@@ -4,7 +4,9 @@ from django.http import HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from users.models import User
+from shop.models import Order
 import json
+from constants import ENDPOINT_SECRET  # Importer l'ID du compte Stripe
 
 @csrf_exempt
 @require_POST
@@ -61,7 +63,6 @@ def handle_payment_succeeded(event):
         return
     
     try:
-        from shop.models import Order
         order = Order.objects.get(id=order_id)
         
         # Confirmer la commande
@@ -81,7 +82,6 @@ def handle_payment_failed(event):
         return
         
     try:
-        from shop.models import Order
         order = Order.objects.get(id=order_id)
         
         # Annuler la commande et remettre le stock
@@ -106,7 +106,6 @@ def handle_chargeback(event):
         order_id = payment_intent['metadata'].get('order_id')
         
         if order_id:
-            from shop.models import Order
             order = Order.objects.get(id=order_id)
             
             # Marquer comme contestée

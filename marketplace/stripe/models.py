@@ -102,6 +102,35 @@ class StripeManager(models.Manager):
             return None
     
     @staticmethod
+    def create_payment_intent_for_order(customer_id, amount, order_id, stripe_account_id):
+        """Crée un Payment Intent avec métadonnées pour une commande."""
+        print(f"\n--- Création Payment Intent pour commande {order_id} ---")
+        try:
+            payment_intent = stripe.PaymentIntent.create(
+                amount=amount,  # Montant en centimes
+                currency='eur',
+                customer=customer_id,
+                # 🔑 CRUCIAL : Métadonnées pour retrouver la commande dans les webhooks
+                metadata={
+                    'order_id': str(order_id),
+                    'source': 'marketplace',
+                    'customer_id': customer_id
+                },
+                # Configuration paiement
+                confirmation_method='manual',
+                confirm=False,  # Ne pas confirmer automatiquement
+                stripe_account=stripe_account_id
+            )
+            
+            print(f"✅ Payment Intent créé : {payment_intent.id}")
+            print(f"   Order ID dans metadata : {payment_intent.metadata.get('order_id')}")
+            return payment_intent
+            
+        except stripe.error.StripeError as e:
+            print(f"❌ Erreur création Payment Intent : {e}")
+            return None
+    
+    @staticmethod
     def create_direct_payment_intent(customer_id, payment_method_id, amount, currency, description, stripe_account_id):
         print(f"\n--- 3. Création d'un Payment Intent pour une Direct Charge sur le compte connecté '{stripe_account_id}' ---")
         try:
