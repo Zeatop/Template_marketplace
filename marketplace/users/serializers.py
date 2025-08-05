@@ -55,9 +55,25 @@ class UserSerializer(serializers.ModelSerializer):
         return value
     
     def validate_password(self, value):
-        """Valide la complexité du mot de passe."""
+        """Validation renforcée du mot de passe."""
+        import re
+        
         if len(value) < 8:
             raise serializers.ValidationError("Le mot de passe doit contenir au moins 8 caractères.")
+        
+        if not re.search(r'[A-Z]', value):
+            raise serializers.ValidationError("Le mot de passe doit contenir au moins une majuscule.")
+        
+        if not re.search(r'[a-z]', value):
+            raise serializers.ValidationError("Le mot de passe doit contenir au moins une minuscule.")
+        
+        if not re.search(r'\d', value):
+            raise serializers.ValidationError("Le mot de passe doit contenir au moins un chiffre.")
+        
+        # Optionnel : caractères spéciaux
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', value):
+            raise serializers.ValidationError("Le mot de passe doit contenir au moins un caractère spécial.")
+        
         return value
 
     def create(self, validated_data):

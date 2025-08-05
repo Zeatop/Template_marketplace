@@ -50,7 +50,7 @@ class Product(models.Model):
             name=product_infos["name"], 
             description=product_infos["description"], 
             price=Decimal(product_infos["price"]),
-            promotion_price=Decimal(product_infos.get("promotion_price", 0)),
+            promotion_price=Decimal(product_infos.get("promotion_price", None)),
             stock=product_infos["stock"],
             maxi_order_quantity=product_infos["max_order_quantity"],
             category=product_infos.get("category", ""),
@@ -76,8 +76,6 @@ class Product(models.Model):
                 nickname="Standard Price",
                 stripe_account_id=STRIPE_ACCOUNT_ID,
             )
-            self.stripe_price_id = stripe_price.id
-            self.stripe_product_id = stripe_product.id
             self.save()
             return stripe_product
         except StripeError as e:

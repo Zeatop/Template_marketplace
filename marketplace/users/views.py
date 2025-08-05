@@ -38,7 +38,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if not stripe_customer:
         # ✅ Utilisateur créé mais pas synchronisé avec Stripe
             return Response({
-                'message': 'Utilisateur créé avec succès. Synchronisation Stripe en attente.',
+                'message': 'Création de l\'utilisateur sur Stripe échouée',
                 'user_id': user.id,
                 'stripe_sync': False
             }, status=status.HTTP_201_CREATED)
@@ -90,7 +90,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 data=serializer.validated_data,
                 stripe_account_id=STRIPE_ACCOUNT_ID
             )
-        except stripe.error.StripeError as e:
+        except StripeError as e:
             return Response({
                 'error': 'Erreur lors de la mise à jour du compte de paiement',
                 'details': str(e)

@@ -42,17 +42,15 @@ class ProductViewSet(viewsets.ModelViewSet):
         # ✅ Utilisateur créé mais pas synchronisé avec Stripe
             return Response({
                 'message': 'Produit créé mais synchronisation Stripe échouée',
-                'user_id': product.id,
+                'product_id': product.id,
                 'stripe_sync': False
             }, status=status.HTTP_201_CREATED)
     
         return Response({
             'message': 'Produit et price créés et synchronisés avec succès',
-            'user': product.id,
+            'product_id': product.id,
             'stripe_sync': True
-        }, status=status.HTTP_201_CREATED)
-        
-        
+        }, status=status.HTTP_201_CREATED)       
     
     def get_object(self):
 
@@ -147,7 +145,9 @@ class CartViewSet(viewsets.GenericViewSet):
     
     def get_or_create_cart(self):
         """Récupère ou crée le panier de l'utilisateur."""
-        cart = Cart.get_or_create_cart(self.request.user)
+        cart, created = Cart.objects.select_related('user').prefetch_related(
+            'items__product'  # ✅ Évite N+1 queries
+        ).get_or_create(user=self.request.user)
         return cart
     
     @action(detail=False, methods=['get'])
@@ -274,6 +274,11 @@ class OrderViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """Filtre les commandes selon les permissions."""
+        base_queryset = Order.objects.select_related(
+            'user', 'cart'
+        ).prefetch_related(
+            'items__product'  # ✅ Évite N+1 sur les produits des items
+        )
         if self.request.user.is_staff:
             # Admin voit toutes les commandes
             return Order.objects.all()
