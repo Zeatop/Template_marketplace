@@ -407,6 +407,12 @@ class Order(models.Model):
                 # Si tout est OK, créer la commande
                 total_price = cart.total_price
                 order = cls.objects.create(user=user, cart=cart, total_price=total_price)
+                payment_intent = StripeManager.create_payment_intent_for_order(
+                    customer_id=user.stripe_user_id,
+                    amount=int(total_price * 100),  # En centimes
+                    order_id=order.id,  # 🆕 IMPORTANT : lier à la commande
+                    stripe_account_id=STRIPE_ACCOUNT_ID
+                )
 
                 # 🆕 Créer les OrderItems (snapshot figé)
                 for cart_item in cart.items.all():

@@ -5,4 +5,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('', include('users.urls')),
     path('', include('shop.urls')),
+    path('webhooks/stripe/', include('stripe.urls')),
 ]
