@@ -4,6 +4,13 @@ import datetime
 from decimal import Decimal
 from users.models import User
 import requests
+from stripe.models import StripeManager
+from stripe.error import StripeError
+from constants import STRIPE_ACCOUNT_ID
+from rest_framework.response import Response
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Product(models.Model):
     """Modèle représentant un produit."""
@@ -24,7 +31,7 @@ class Product(models.Model):
     stripe_product_id = models.CharField(
         max_length=255, 
         verbose_name="ID Produit Stripe", 
-        blank=True
+        default=None,
     )  # ID Stripe pour la gestion des paiements
 
     class Meta:
@@ -53,6 +60,36 @@ class Product(models.Model):
             editor=product_infos.get("editor", "")
         )
         return product
+    
+    def sync_product_with_stripe(self):
+        try:
+            stripe_product = StripeManager.create_or_retrieve_product(
+                name=self.name,
+                description=self.description,
+                stripe_account_id=STRIPE_ACCOUNT_ID,
+            )
+            self.stripe_product_id = stripe_product.id
+            stripe_price = StripeManager.create_or_retrieve_price(
+                product_id=stripe_product.id,
+                unit_amount=int(self.price * 100),
+                currency="eur",
+                nickname="Standard Price",
+                stripe_account_id=STRIPE_ACCOUNT_ID,
+            )
+            self.stripe_price_id = stripe_price.id
+            self.stripe_product_id = stripe_product.id
+            self.save()
+            return stripe_product
+        except StripeError as e:
+            logger.error(f"Erreur Stripe pour produit {self.name}: {e}")
+            return None        
+        
+        
+
+    def get_user_cart(self):
+        """Récupère le panier associé à l'utilisateur."""
+        from marketplace.shop.models import Cart
+        return Cart.objects.filter(user=self).first()
     
     def update_stock(self, stock):
         """Met à jour le stock du produit."""

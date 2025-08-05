@@ -35,42 +35,22 @@ class ProductViewSet(viewsets.ModelViewSet):
         """Crée un nouveau produit."""
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
-            Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        stripe_product = None
-        try:
-            # Créer le produit dans Stripe
-            stripe_product = StripeManager.create_or_retrieve_product(
-                name=serializer.validated_data['name'],
-                description=serializer.validated_data.get('description', ''),
-                stripe_account_id = STRIPE_ACCOUNT_ID
-            )
-
-        except StripeError:
-            return Response({'error': 'Erreur lors de la création du produit stripe'})
-        
-        try:
-            # Créer le produit dans Stripe
-            stripe_price = StripeManager.create_or_retrieve_price(
-                product_id=stripe_product.id,  
-                unit_amount=int(serializer.validated_data['price'] * 100),  # Convertir en cents
-                currency='eur',  # Utiliser la devise appropriée   
-                stripe_account_id = STRIPE_ACCOUNT_ID
-            )
-
-        except StripeError:
-            return Response({'error': 'Erreur lors de la création du prix associé au produit stripe'})
-        
-        try:
-            product_data = serializer.validated_data
-            product_data['stripe_product_id'] = stripe_product.id
-            user = User.create_user(user_data)
-        
-        except Exception as e:
-            # Rollback Stripe
-            StripeManager.delete_product(stripe_customer.id)
-            raise   
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        product = serializer.save()
+        stripe_product = product.sync_product_with_stripe()
+        if not stripe_product:
+        # ✅ Utilisateur créé mais pas synchronisé avec Stripe
+            return Response({
+                'message': 'Produit créé mais synchronisation Stripe échouée',
+                'user_id': product.id,
+                'stripe_sync': False
+            }, status=status.HTTP_201_CREATED)
+    
+        return Response({
+            'message': 'Produit et price créés et synchronisés avec succès',
+            'user': product.id,
+            'stripe_sync': True
+        }, status=status.HTTP_201_CREATED)
         
         
     
@@ -282,7 +262,6 @@ class CartViewSet(viewsets.GenericViewSet):
         cart.clear_cart()
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
-
 
 class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet pour la gestion des commandes."""
