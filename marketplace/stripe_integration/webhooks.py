@@ -10,9 +10,9 @@ from django.views.decorators.http import require_POST
 from django.utils import timezone
 from django.db import transaction
 from django.conf import settings
-
 from users.models import User
 from shop.models import Order, WebhookEvent
+from constants import STRIPE_ACCOUNT_ID
 
 # Configuration du logging
 logger = logging.getLogger('stripe_webhooks')

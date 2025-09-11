@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'users',
     'security',
     'shop',
+    'stripe_integration',
     'django_ratelimit',
 ]
 

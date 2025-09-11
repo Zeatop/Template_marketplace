@@ -4,7 +4,7 @@ import datetime
 from decimal import Decimal
 from users.models import User
 import requests
-from stripe.models import StripeManager
+from stripe_integration.models import StripeManager
 from stripe.error import StripeError
 from constants import STRIPE_ACCOUNT_ID
 from rest_framework.response import Response
@@ -12,6 +12,8 @@ import logging
 import json
 from django.utils import timezone
 from datetime import timedelta
+from django.db import transaction
+import stripe
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +91,7 @@ class Product(models.Model):
 
     def get_user_cart(self):
         """Récupère le panier associé à l'utilisateur."""
-        from marketplace.shop.models import Cart
-        return Cart.objects.filter(user=self).first()
+        return Cart.objects.filter(user=self).cart
     
     def update_stock(self, stock):
         """Met à jour le stock du produit."""
@@ -412,53 +413,66 @@ class Order(models.Model):
                 errors.append(f"Cet article n'est plus en stock : {product_name} - {error_msg}")
             return None, errors
         
-        from django.db import transaction
         try:
             with transaction.atomic():
-                # ✅ Utiliser les méthodes utilitaires
+                # ✅ Vérifications préliminaires
                 for item in cart.items.all():
                     product = Product.objects.select_for_update().get(id=item.product.id)
                     can_purchase, message = product.can_purchase_quantity(item.quantity)
                     if not can_purchase:
                         return None, [f"Cet article n'est plus en stock : {product.name} - {message}"]
                 
-                # Si tout est OK, créer la commande
                 total_price = cart.total_price
-                order = cls.objects.create(user=user, cart=cart, total_price=total_price)
+                
+                # 🔑 CRÉER D'ABORD LE PAYMENT INTENT (AVANT L'ORDER)
                 payment_intent = StripeManager.create_payment_intent_for_order(
                     customer_id=user.stripe_user_id,
-                    amount=int(total_price * 100),  # En centimes
-                    order_id=order.id,
+                    amount=int(total_price * 100),
+                    order_id=None,  # On n'a pas encore l'order_id
                     stripe_account_id=STRIPE_ACCOUNT_ID
                 )
                 
                 if not payment_intent:
-                    # Si échec Payment Intent, annuler la commande
                     raise Exception("Échec création Payment Intent")
                 
-                # 🔑 CRUCIAL : Sauvegarder l'ID Payment Intent
-                order.payment_intent_id = payment_intent.id
-                order.save()
+                # 🆕 MAINTENANT créer l'Order avec le payment_intent_id
+                order = cls.objects.create(
+                    user=user, 
+                    cart=cart, 
+                    total_price=total_price,
+                    payment_intent_id=payment_intent.id  # Directement lors de la création
+                )
+                
+                # 🔄 Mettre à jour les métadonnées du Payment Intent avec l'order_id
+                try:
+                    stripe.PaymentIntent.modify(
+                        payment_intent.id,
+                        metadata={'order_id': str(order.id), 'source': 'marketplace'},
+                        stripe_account=STRIPE_ACCOUNT_ID
+                    )
+                except Exception as e:
+                    logger.warning(f"Impossible de mettre à jour les métadonnées PI: {e}")
+                    # Pas critique, on continue
 
-                # 🆕 Créer les OrderItems (snapshot figé)
+                # Créer les OrderItems
                 for cart_item in cart.items.all():
                     OrderItem.objects.create(
                         order=order,
                         product=cart_item.product,
-                        product_name=cart_item.product.name,  # Figer le nom
+                        product_name=cart_item.product.name,
                         quantity=cart_item.quantity,
                         unit_price=cart_item.product.promotion_price if cart_item.product.is_on_promotion() 
-                                else cart_item.product.price  # Figer le prix
+                                else cart_item.product.price
                     )
                 
-                # Réduire le stock de tous les produits
+                # Réduire le stock
                 for item in cart.items.all():
                     product = Product.objects.select_for_update().get(id=item.product.id)
                     product.stock -= item.quantity
                     product.save()
                 
                 cart.clear_cart()
-                print(Colors.success(f"Commande {order.id} créée avec succès."))
+                print(Colors.success(f"Commande {order.id} créée avec Payment Intent {payment_intent.id}"))
                 return order, []
             
         except Exception as e:
@@ -515,7 +529,6 @@ class Order(models.Model):
     def cancel_order(self):
         """Annule la commande si elle est en attente ou en cours de traitement."""
         if self.status in ['pending', 'processing']:
-            from django.db import transaction
             
             with transaction.atomic():
                 # Remettre le stock en place

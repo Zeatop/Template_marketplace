@@ -6,7 +6,7 @@ from .permissions import IsSuperUser
 from django.contrib.auth import authenticate, login, logout
 from .models import User
 from .serializers import UserSerializer, AddressSerializer
-from stripe.models import StripeManager
+from stripe_integration.models import StripeManager
 from stripe import StripeError
 from constants import STRIPE_ACCOUNT_ID  # Importer l'ID du compte Stripe
 from django_ratelimit.decorators import ratelimit

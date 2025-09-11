@@ -2,7 +2,7 @@ from django.db import models
 from enum import Enum, auto
 from django.contrib.auth.models import AbstractUser
 from rest_framework.response import Response
-from stripe.models import StripeManager
+from stripe_integration.models import StripeManager
 from stripe.error import StripeError
 from constants import STRIPE_ACCOUNT_ID  # Importer l'ID du compte Stripe
 
@@ -144,12 +144,6 @@ class User(AbstractUser):
         self.stripe_user_id = stripe_customer.id
         self.save()
         return stripe_customer
-        
-
-    def get_user_cart(self):
-        """Récupère le panier associé à l'utilisateur."""
-        from marketplace.shop.models import Cart
-        return Cart.objects.filter(user=self).first()
     
     def has_admin_access(self):
         """Vérifie si l'utilisateur a les droits admin."""

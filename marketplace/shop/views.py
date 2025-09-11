@@ -11,7 +11,7 @@ from .serializers import ProductSerializer, CartSerializer, OrderSerializer, Ord
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from constants import STRIPE_ACCOUNT_ID
-from stripe.models import StripeManager
+from stripe_integration.models import StripeManager
 
 
 User = get_user_model()
